@@ -130,6 +130,15 @@ Cache modes in `Settings`:
 - `java` - cache only Java archives
 - `none` - disable archive cache
 
+SDK package cache in `Settings`:
+
+- `SDK package cache: ON` - cache installed SDK folders (`platform-tools`, selected `platforms`, selected `build-tools`) in `cache/sdk-packages/`
+- `SDK package cache: OFF` - do not store/restore SDK package folders from cache
+
+You can also toggle:
+
+- `Pick from installed only` - choose platform/build-tools only from locally installed versions
+
 Current settings are shown in the main dashboard menu.
 
 No changes are written to `~/.bashrc`. No global Android SDK install is used.

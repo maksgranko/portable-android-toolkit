@@ -10,6 +10,8 @@ JDK_MAJOR="21"
 JAVA_MODE="temurin"
 JAVA_CUSTOM_URL=""
 DOWNLOAD_CACHE_MODE="all"
+PICK_FROM_INSTALLED_ONLY="0"
+SDK_PACKAGE_CACHE="1"
 ANDROID_PLATFORM="android-35"
 BUILD_TOOLS="35.0.0"
 
@@ -90,9 +92,11 @@ JAVA_DIR="$ANDROID_DIR/jdk"
 STUDIO_DIR="$ANDROID_DIR/android-studio"
 CACHE_DIR="$ANDROID_DIR/.cache"
 DOWNLOAD_CACHE_DIR="$SCRIPT_DIR/cache"
+SDK_PACKAGE_CACHE_DIR="$DOWNLOAD_CACHE_DIR/sdk-packages"
 TOOLS_DIR="$SDK_DIR/cmdline-tools/latest"
 CONFIG_FILE="$ANDROID_DIR/.portable-android.conf"
 JDK_META_FILE="$JAVA_DIR/.portable-jdk.meta"
+LOCK_FILE="$ANDROID_DIR/.setup.lock"
 
 load_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
@@ -108,6 +112,8 @@ JAVA_MODE="$JAVA_MODE"
 JDK_MAJOR="$JDK_MAJOR"
 JAVA_CUSTOM_URL="$JAVA_CUSTOM_URL"
 DOWNLOAD_CACHE_MODE="$DOWNLOAD_CACHE_MODE"
+PICK_FROM_INSTALLED_ONLY="$PICK_FROM_INSTALLED_ONLY"
+SDK_PACKAGE_CACHE="$SDK_PACKAGE_CACHE"
 ANDROID_PLATFORM="$ANDROID_PLATFORM"
 BUILD_TOOLS="$BUILD_TOOLS"
 EOF
@@ -127,11 +133,65 @@ normalize_settings() {
     all|java|none) ;;
     *) DOWNLOAD_CACHE_MODE="all" ;;
   esac
+  case "${PICK_FROM_INSTALLED_ONLY:-0}" in
+    0|1) ;;
+    *) PICK_FROM_INSTALLED_ONLY="0" ;;
+  esac
+  case "${SDK_PACKAGE_CACHE:-1}" in
+    0|1) ;;
+    *) SDK_PACKAGE_CACHE="1" ;;
+  esac
 }
 
 normalize_settings
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+release_lock() {
+  if [[ -f "$LOCK_FILE" ]]; then
+    local lock_pid
+    lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+    if [[ "$lock_pid" == "$$" ]]; then
+      rm -f "$LOCK_FILE"
+    fi
+  fi
+}
+
+acquire_lock() {
+  mkdir -p "$ANDROID_DIR"
+  if [[ -f "$LOCK_FILE" ]]; then
+    local existing_pid
+    existing_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+    if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+      warn "Another setup instance is already running (PID: $existing_pid)"
+      if [[ -t 0 ]]; then
+        read -r -p "Terminate previous instance and continue? [y/N]: " ans
+        case "$ans" in
+          y|Y|yes|YES)
+            if kill "$existing_pid" 2>/dev/null; then
+              ok "Previous instance terminated"
+              sleep 1
+            else
+              fail "Could not terminate running instance: $existing_pid"
+            fi
+            ;;
+          *)
+            fail "Aborted to avoid concurrent setup runs"
+            ;;
+        esac
+      else
+        fail "Another setup instance is running (PID: $existing_pid). Stop it first."
+      fi
+    else
+      warn "Found stale lock file, replacing it"
+    fi
+  fi
+
+  printf "%s\n" "$$" > "$LOCK_FILE"
+  trap release_lock EXIT INT TERM
+}
+
+acquire_lock
 
 ensure_tools() {
   local missing=()
@@ -175,8 +235,15 @@ show_settings_summary() {
   if [[ "$JAVA_MODE" == "temurin" ]]; then
     java_summary="$JAVA_MODE (JDK $JDK_MAJOR)"
   fi
+  local pick_mode="available"
+  [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && pick_mode="installed-only"
+  local sdk_cache_mode="OFF"
+  [[ "$SDK_PACKAGE_CACHE" == "1" ]] && sdk_cache_mode="ON"
+  local pick_state="OFF"
+  [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && pick_state="ON"
   printf "%bCurrent settings:%b " "$C_INFO" "$C_RESET"
-  printf "%bJava:%b %s  %b|%b  %bCache:%b %s\n" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$DOWNLOAD_CACHE_MODE"
+  printf "%bJava:%b %s  %b|%b  %bCache:%b %s, %bPick:%b %s, %bSDK:%b %s" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$DOWNLOAD_CACHE_MODE" "$C_INFO" "$C_RESET" "$pick_state" "$C_INFO" "$C_RESET" "$sdk_cache_mode"
+  printf "\n"
 }
 
 settings_menu() {
@@ -185,7 +252,10 @@ settings_menu() {
   printf "  %b1) Cache mode%b (current: %s)\n" "$C_WARN" "$C_RESET" "$DOWNLOAD_CACHE_MODE"
   printf "  %b2) Set Android platform%b (current: %s)\n" "$C_INFO" "$C_RESET" "$ANDROID_PLATFORM"
   printf "  %b3) Set build-tools version%b (current: %s)\n" "$C_INFO" "$C_RESET" "$BUILD_TOOLS"
-  printf "  %b4) Clear download cache%b\n" "$C_WARN" "$C_RESET"
+  printf "  %b4) Pick from installed only%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && echo ON || echo OFF)"
+  printf "  %b5) SDK package cache%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$SDK_PACKAGE_CACHE" == "1" ]] && echo ON || echo OFF)"
+  printf "  %b6) Clear download cache%b\n" "$C_WARN" "$C_RESET"
+  printf "  %b7) Clear SDK package cache%b\n" "$C_WARN" "$C_RESET"
   printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
   read -r -p "> " schoice
   case "$schoice" in
@@ -205,21 +275,23 @@ settings_menu() {
       ok "Download cache mode is now: $DOWNLOAD_CACHE_MODE"
       ;;
     2)
-      local platforms latest_platform
+      local platforms latest_platform installed_platforms
       platforms=""
       latest_platform=""
-      if [[ -x "$TOOLS_DIR/bin/sdkmanager" ]]; then
+      installed_platforms=""
+      installed_platforms="$(get_installed_platforms)"
+
+      if [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]]; then
+        platforms="$installed_platforms"
+        latest_platform="$(printf "%s\n" "$platforms" | tail -n 1)"
+      elif [[ -x "$TOOLS_DIR/bin/sdkmanager" ]]; then
         export_portable_env
-        platforms="$(sdkmanager --list 2>/dev/null | sed -n 's/^  platforms;\(android-[0-9][0-9]*\).*/\1/p' | sort -uV)"
+        platforms="$(get_available_platforms)"
         latest_platform="$(printf "%s\n" "$platforms" | tail -n 1)"
       fi
 
-      if [[ -n "$platforms" ]]; then
-        echo "Available platforms (from sdkmanager):"
-        printf "%s\n" "$platforms" | sed 's/^/  - /'
-      else
-        echo "Available platforms: (could not fetch now)"
-      fi
+      print_short_list "Available platforms:" "$platforms" "$ANDROID_PLATFORM"
+      print_short_list "Installed platforms:" "$installed_platforms" "$ANDROID_PLATFORM"
       echo "Input rules:"
       echo "  - Enter empty value -> keep current ($ANDROID_PLATFORM)"
       if [[ -n "$latest_platform" ]]; then
@@ -240,27 +312,34 @@ settings_menu() {
           warn "Could not resolve latest platform now; keeping: $ANDROID_PLATFORM"
         fi
       else
-        ANDROID_PLATFORM="$pval"
-        save_config
-        ok "Platform set to $ANDROID_PLATFORM"
+        if [[ -n "$platforms" ]] && ! printf "%s\n" "$platforms" | grep -qx "$pval"; then
+          warn "Platform not available: $pval"
+          warn "Keeping current: $ANDROID_PLATFORM"
+        else
+          ANDROID_PLATFORM="$pval"
+          save_config
+          ok "Platform set to $ANDROID_PLATFORM"
+        fi
       fi
       ;;
     3)
-      local build_tools_list latest_build_tools
+      local build_tools_list latest_build_tools installed_build_tools
       build_tools_list=""
       latest_build_tools=""
-      if [[ -x "$TOOLS_DIR/bin/sdkmanager" ]]; then
+      installed_build_tools=""
+      installed_build_tools="$(get_installed_build_tools)"
+
+      if [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]]; then
+        build_tools_list="$installed_build_tools"
+        latest_build_tools="$(printf "%s\n" "$build_tools_list" | tail -n 1)"
+      elif [[ -x "$TOOLS_DIR/bin/sdkmanager" ]]; then
         export_portable_env
-        build_tools_list="$(sdkmanager --list 2>/dev/null | sed -n 's/^  build-tools;\([0-9][0-9.]*\).*/\1/p' | sort -uV)"
+        build_tools_list="$(get_available_build_tools)"
         latest_build_tools="$(printf "%s\n" "$build_tools_list" | tail -n 1)"
       fi
 
-      if [[ -n "$build_tools_list" ]]; then
-        echo "Available build-tools (from sdkmanager):"
-        printf "%s\n" "$build_tools_list" | sed 's/^/  - /'
-      else
-        echo "Available build-tools: (could not fetch now)"
-      fi
+      print_short_list "Available build-tools:" "$build_tools_list" "$BUILD_TOOLS"
+      print_short_list "Installed build-tools:" "$installed_build_tools" "$BUILD_TOOLS"
       echo "Input rules:"
       echo "  - Enter empty value -> keep current ($BUILD_TOOLS)"
       if [[ -n "$latest_build_tools" ]]; then
@@ -281,13 +360,41 @@ settings_menu() {
           warn "Could not resolve latest build-tools now; keeping: $BUILD_TOOLS"
         fi
       else
-        BUILD_TOOLS="$bval"
-        save_config
-        ok "Build-tools set to $BUILD_TOOLS"
+        if [[ -n "$build_tools_list" ]] && ! printf "%s\n" "$build_tools_list" | grep -qx "$bval"; then
+          warn "Build-tools not available: $bval"
+          warn "Keeping current: $BUILD_TOOLS"
+        else
+          BUILD_TOOLS="$bval"
+          save_config
+          ok "Build-tools set to $BUILD_TOOLS"
+        fi
       fi
       ;;
     4)
+      if [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]]; then
+        PICK_FROM_INSTALLED_ONLY="0"
+      else
+        PICK_FROM_INSTALLED_ONLY="1"
+      fi
+      save_config
+      ok "Pick from installed only: $([[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && echo ON || echo OFF)"
+      ;;
+    5)
+      if [[ "$SDK_PACKAGE_CACHE" == "1" ]]; then
+        SDK_PACKAGE_CACHE="0"
+      else
+        SDK_PACKAGE_CACHE="1"
+      fi
+      save_config
+      ok "SDK package cache: $([[ "$SDK_PACKAGE_CACHE" == "1" ]] && echo ON || echo OFF)"
+      ;;
+    6)
       clear_download_cache
+      ;;
+    7)
+      mkdir -p "$SDK_PACKAGE_CACHE_DIR"
+      rm -rf "$SDK_PACKAGE_CACHE_DIR"/*
+      ok "SDK package cache cleared"
       ;;
     0)
       SKIP_PAUSE=1
@@ -338,15 +445,95 @@ check_space() {
 }
 
 get_available_platforms() {
-  sdkmanager --list 2>/dev/null | sed -n 's/^  platforms;\(android-[0-9][0-9]*\).*/\1/p' | sort -uV
+  sdkmanager --list 2>/dev/null | sed -n 's/^  platforms;\(android-[0-9][0-9]*\)[[:space:]]\+|.*/\1/p' | sort -uV
 }
 
 get_available_build_tools() {
-  sdkmanager --list 2>/dev/null | sed -n 's/^  build-tools;\([0-9][0-9.]*\).*/\1/p' | sort -uV
+  sdkmanager --list 2>/dev/null | sed -n 's/^  build-tools;\([0-9]\+\.[0-9]\+\.[0-9]\+\)[[:space:]]\+|.*/\1/p' | sort -uV
+}
+
+get_installed_platforms() {
+  if [[ -d "$SDK_DIR/platforms" ]]; then
+    for p in "$SDK_DIR"/platforms/android-*; do
+      [[ -d "$p" ]] && basename "$p"
+    done | sort -uV
+  fi
+}
+
+get_installed_build_tools() {
+  if [[ -d "$SDK_DIR/build-tools" ]]; then
+    for b in "$SDK_DIR"/build-tools/*; do
+      [[ -d "$b" ]] && basename "$b"
+    done | sort -uV
+  fi
+}
+
+get_cached_jdk_versions() {
+  if [[ -d "$DOWNLOAD_CACHE_DIR" ]]; then
+    for f in "$DOWNLOAD_CACHE_DIR"/jdk-*.tar.gz; do
+      [[ -f "$f" ]] || continue
+      basename "$f" | sed -n 's/^jdk-\([0-9][0-9]*\)\.tar\.gz$/\1/p'
+    done | sort -uV
+  fi
+}
+
+print_short_list() {
+  local title="$1" values="$2" current="$3"
+  echo "$title"
+  if [[ -z "$values" ]]; then
+    echo "  - (none)"
+    return
+  fi
+  while IFS= read -r v; do
+    [[ -n "$v" ]] || continue
+    if [[ "$v" == "$current" ]]; then
+      echo "  - $v (current)"
+    else
+      echo "  - $v"
+    fi
+  done <<< "$values"
 }
 
 ensure_dirs() {
-  mkdir -p "$ANDROID_DIR" "$SDK_DIR" "$CACHE_DIR" "$ANDROID_DIR/.android" "$ANDROID_DIR/.gradle" "$ANDROID_DIR/.config" "$ANDROID_DIR/.cache" "$DOWNLOAD_CACHE_DIR"
+  mkdir -p "$ANDROID_DIR" "$SDK_DIR" "$CACHE_DIR" "$ANDROID_DIR/.android" "$ANDROID_DIR/.gradle" "$ANDROID_DIR/.config" "$ANDROID_DIR/.cache" "$DOWNLOAD_CACHE_DIR" "$SDK_PACKAGE_CACHE_DIR"
+}
+
+sync_sdk_packages_to_cache() {
+  [[ "$SDK_PACKAGE_CACHE" == "1" ]] || return 0
+  mkdir -p "$SDK_PACKAGE_CACHE_DIR/platform-tools" "$SDK_PACKAGE_CACHE_DIR/platforms" "$SDK_PACKAGE_CACHE_DIR/build-tools"
+  if [[ -d "$SDK_DIR/platform-tools" ]]; then
+    rm -rf "$SDK_PACKAGE_CACHE_DIR/platform-tools"
+    cp -a "$SDK_DIR/platform-tools" "$SDK_PACKAGE_CACHE_DIR/platform-tools"
+  fi
+  if [[ -d "$SDK_DIR/platforms/${ANDROID_PLATFORM}" ]]; then
+    rm -rf "$SDK_PACKAGE_CACHE_DIR/platforms/${ANDROID_PLATFORM}"
+    cp -a "$SDK_DIR/platforms/${ANDROID_PLATFORM}" "$SDK_PACKAGE_CACHE_DIR/platforms/${ANDROID_PLATFORM}"
+  fi
+  if [[ -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]]; then
+    rm -rf "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}"
+    cp -a "$SDK_DIR/build-tools/${BUILD_TOOLS}" "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}"
+  fi
+}
+
+restore_sdk_packages_from_cache() {
+  [[ "$SDK_PACKAGE_CACHE" == "1" ]] || return 0
+  local restored=0
+  if [[ -d "$SDK_PACKAGE_CACHE_DIR/platform-tools" && ! -d "$SDK_DIR/platform-tools" ]]; then
+    mkdir -p "$SDK_DIR"
+    cp -a "$SDK_PACKAGE_CACHE_DIR/platform-tools" "$SDK_DIR/platform-tools"
+    restored=1
+  fi
+  if [[ -d "$SDK_PACKAGE_CACHE_DIR/platforms/${ANDROID_PLATFORM}" && ! -d "$SDK_DIR/platforms/${ANDROID_PLATFORM}" ]]; then
+    mkdir -p "$SDK_DIR/platforms"
+    cp -a "$SDK_PACKAGE_CACHE_DIR/platforms/${ANDROID_PLATFORM}" "$SDK_DIR/platforms/${ANDROID_PLATFORM}"
+    restored=1
+  fi
+  if [[ -d "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}" && ! -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]]; then
+    mkdir -p "$SDK_DIR/build-tools"
+    cp -a "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}" "$SDK_DIR/build-tools/${BUILD_TOOLS}"
+    restored=1
+  fi
+  [[ "$restored" -eq 1 ]] && ok "Restored SDK packages from cache"
 }
 
 root_rel() {
@@ -515,6 +702,7 @@ install_cmdline_tools() {
 
 install_sdk_packages() {
   export_portable_env
+  restore_sdk_packages_from_cache
 
   local available_platforms available_build_tools
   available_platforms="$(get_available_platforms || true)"
@@ -522,13 +710,13 @@ install_sdk_packages() {
 
   if [[ -n "$available_platforms" ]] && ! printf "%s\n" "$available_platforms" | grep -qx "$ANDROID_PLATFORM"; then
     warn "Requested platform is unavailable: $ANDROID_PLATFORM"
-    warn "Available platforms: $(printf "%s" "$available_platforms" | tr '\n' ' ' | sed 's/  */ /g')"
+    warn "Use Settings -> Set Android platform (0 for latest valid)"
     return 1
   fi
 
   if [[ -n "$available_build_tools" ]] && ! printf "%s\n" "$available_build_tools" | grep -qx "$BUILD_TOOLS"; then
     warn "Requested build-tools is unavailable: $BUILD_TOOLS"
-    warn "Available build-tools: $(printf "%s" "$available_build_tools" | tr '\n' ' ' | sed 's/  */ /g')"
+    warn "Use Settings -> Set build-tools version (0 for latest valid)"
     return 1
   fi
 
@@ -544,6 +732,7 @@ install_sdk_packages() {
   [[ -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]] || sdk_ok=0
 
   if [[ "$sdk_ok" -eq 1 ]]; then
+    sync_sdk_packages_to_cache
     ok "Installed SDK packages"
   else
     warn "SDK package install incomplete (requested platform/build-tools may be unavailable)"
@@ -1075,10 +1264,15 @@ interactive_menu() {
       5) run_menu_action "Settings" settings_menu ;;
       6)
         echo
+        local cached_jdks
+        cached_jdks="$(get_cached_jdk_versions)"
         printf "%bJava mode:%b\n" "$C_INFO" "$C_RESET"
         printf "  %b1) temurin%b (portable)\n" "$C_INFO" "$C_RESET"
         printf "  %b2) system%b\n" "$C_INFO" "$C_RESET"
         printf "  %b3) custom URL%b (.tar.gz)\n" "$C_INFO" "$C_RESET"
+        if [[ -n "$cached_jdks" ]]; then
+          printf "  Cached JDK versions: %s\n" "$(printf "%s" "$cached_jdks" | tr '\n' ',' | sed 's/,$//')"
+        fi
         read -r -p "> " jchoice
         case "$jchoice" in
           1)
