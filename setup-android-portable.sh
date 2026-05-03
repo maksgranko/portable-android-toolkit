@@ -17,7 +17,7 @@ SDK_PACKAGE_CACHE="0"
 ADVANCED_SOURCES_ENABLED="0"
 CMDLINE_TOOLS_CUSTOM_URL=""
 STUDIO_CUSTOM_URL=""
-EMULATOR_ENABLED="1"
+EMULATOR_ENABLED="0"
 EMULATOR_API="latest"
 EMULATOR_IMAGE_TYPE="google_apis"
 EMULATOR_ABI="x86_64"
@@ -443,15 +443,19 @@ apply_cache_preset() {
   case "$preset" in
     minimal)
       JAVA_ARCHIVE_CACHE="1"; SDK_TOOLS_ARCHIVE_CACHE="1"; STUDIO_INSTALLER_CACHE="0"; SDK_PACKAGE_CACHE="0"
+      EMULATOR_ENABLED="0"
       ;;
     balanced)
       JAVA_ARCHIVE_CACHE="1"; SDK_TOOLS_ARCHIVE_CACHE="1"; STUDIO_INSTALLER_CACHE="0"; SDK_PACKAGE_CACHE="1"
+      EMULATOR_ENABLED="0"
       ;;
     aggressive)
       JAVA_ARCHIVE_CACHE="1"; SDK_TOOLS_ARCHIVE_CACHE="1"; STUDIO_INSTALLER_CACHE="1"; SDK_PACKAGE_CACHE="1"
+      EMULATOR_ENABLED="1"
       ;;
     nocache)
       JAVA_ARCHIVE_CACHE="0"; SDK_TOOLS_ARCHIVE_CACHE="0"; STUDIO_INSTALLER_CACHE="0"; SDK_PACKAGE_CACHE="0"
+      EMULATOR_ENABLED="0"
       ;;
   esac
 }
@@ -1121,6 +1125,7 @@ install_cmdline_tools() {
 
 install_sdk_packages() {
   export_portable_env
+  log "Restoring SDK packages from cache (if available)"
   restore_sdk_packages_from_cache
 
   local available_platforms available_build_tools
@@ -1139,12 +1144,23 @@ install_sdk_packages() {
     return 1
   fi
 
+  local need_platform_tools=0 need_platform=0 need_build_tools=0
+  [[ -x "$SDK_DIR/platform-tools/adb" ]] || need_platform_tools=1
+  [[ -d "$SDK_DIR/platforms/${ANDROID_PLATFORM}" ]] || need_platform=1
+  [[ -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]] || need_build_tools=1
+
+  if [[ "$need_platform_tools" -eq 0 && "$need_platform" -eq 0 && "$need_build_tools" -eq 0 ]]; then
+    ok "SDK packages satisfied from cache"
+    return 0
+  fi
+
   yes | sdkmanager --sdk_root="$SDK_DIR" --licenses >/dev/null || true
-  log "Installing SDK packages via sdkmanager"
-  sdkmanager --sdk_root="$SDK_DIR" \
-    "platform-tools" \
-    "platforms;${ANDROID_PLATFORM}" \
-    "build-tools;${BUILD_TOOLS}"
+  log "Installing missing SDK packages via sdkmanager"
+  local sdk_args=()
+  [[ "$need_platform_tools" -eq 1 ]] && sdk_args+=("platform-tools")
+  [[ "$need_platform" -eq 1 ]] && sdk_args+=("platforms;${ANDROID_PLATFORM}")
+  [[ "$need_build_tools" -eq 1 ]] && sdk_args+=("build-tools;${BUILD_TOOLS}")
+  sdkmanager --sdk_root="$SDK_DIR" "${sdk_args[@]}"
 
   local sdk_ok=1
   [[ -x "$SDK_DIR/platform-tools/adb" ]] || sdk_ok=0
@@ -1225,6 +1241,11 @@ install_studio() {
     fi
   fi
   local archive="$DOWNLOAD_CACHE_DIR/$STUDIO_ARCHIVE"
+  if cache_allowed_for "studio" && [[ -s "$archive" ]]; then
+    log "Using cached Android Studio installer"
+  elif ! cache_allowed_for "studio"; then
+    log "Studio installer cache is OFF, downloading fresh archive"
+  fi
   log "Downloading Android Studio ${STUDIO_VERSION}"
   if ! download_file "$STUDIO_URL" "$archive" "studio"; then
     warn "Failed to download Android Studio: $STUDIO_URL"
@@ -1735,7 +1756,6 @@ install_base() {
 install_all() {
   install_base
   install_studio
-  install_emulator_components || true
   write_env_files
 }
 

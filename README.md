@@ -24,11 +24,11 @@ Install to custom path:
 
 ## Modes
 
-- `all` - JDK + Android SDK + Android Studio (+ emulator if enabled)
+- `all` - JDK + Android SDK + Android Studio
 - `base` - JDK + Android SDK (for Gradle CLI builds)
 - `studio` - only Android Studio
 - `emulator` - install emulator package + selected system image profile
-- `ide-ready` - base + studio + emulator profile (if enabled)
+- `ide-ready` - base + studio + emulator profile
   - also installs a wizard-compatible API 35 Google APIs x86_64 emulator profile
 - `reinstall` - smart reinstall of currently installed components
 - `status` - detailed health/status dashboard
@@ -147,7 +147,7 @@ SDK package cache in `Settings`:
 
 Emulator profile in `Settings` (latest defaults):
 
-- `Emulator: ON` by default
+- `Emulator: OFF` by default (enabled by Aggressive cache preset or manually)
 - API: `latest` by default
 - Image type: `google_apis` by default (lightweight, no Play Store)
 - ABI: `x86_64` by default
