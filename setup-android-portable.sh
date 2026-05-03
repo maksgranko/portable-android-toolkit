@@ -50,12 +50,154 @@ fail() { printf "%b[FAIL]%b %s\n" "$C_FAIL" "$C_RESET" "$*" >&2; exit 1; }
 
 hr() { printf "%b%s%b\n" "$C_DIM" "────────────────────────────────────────────────────────────" "$C_RESET"; }
 
+CACHE_SIZE_TTL_SEC=20
+LAST_CACHE_SIZE_REFRESH_TS=0
+CACHE_SIZE_DISPLAY="-"
+RUNTIME_CACHE_SIZE_DISPLAY="-"
+RESOLVED_EMULATOR_API=""
+FORCE_FULL_REFRESH=1
+
 dir_size_human() {
   local d="$1"
   if [[ -d "$d" ]]; then
     du -sh "$d" 2>/dev/null | awk '{print $1}'
   else
     printf "0"
+  fi
+}
+
+collect_render_data() {
+  local force_full="${1:-0}"
+  local now
+  now="$(date +%s)"
+
+  if [[ "$force_full" == "1" && "$EMULATOR_API" == "latest" ]]; then
+    RESOLVED_EMULATOR_API="$(resolve_latest_emulator_api 2>/dev/null || true)"
+  fi
+
+  if [[ "$force_full" == "1" || $((now - LAST_CACHE_SIZE_REFRESH_TS)) -ge "$CACHE_SIZE_TTL_SEC" ]]; then
+    local t1 t2
+    t1="$(mktemp)"
+    t2="$(mktemp)"
+    (dir_size_human "$DOWNLOAD_CACHE_DIR" > "$t1") &
+    (dir_size_human "$CACHE_DIR" > "$t2") &
+    wait
+    CACHE_SIZE_DISPLAY="$(cat "$t1" 2>/dev/null || echo '-')"
+    RUNTIME_CACHE_SIZE_DISPLAY="$(cat "$t2" 2>/dev/null || echo '-')"
+    rm -f "$t1" "$t2"
+    LAST_CACHE_SIZE_REFRESH_TS="$now"
+  fi
+}
+
+perf_render_diagnostics() {
+  ensure_dirs
+  write_env_files
+  export_portable_env
+
+  local t0 t1 t2 t3 t4 t5
+  t0="$(date +%s%3N)"
+
+  t1="$(date +%s%3N)"
+  dir_size_human "$DOWNLOAD_CACHE_DIR" >/dev/null
+  t2="$(date +%s%3N)"
+
+  dir_size_human "$CACHE_DIR" >/dev/null
+  t3="$(date +%s%3N)"
+
+  sdkmanager --list >/dev/null 2>&1 || true
+  t4="$(date +%s%3N)"
+
+  LAST_CACHE_SIZE_REFRESH_TS=0
+  collect_render_data 1
+  t5="$(date +%s%3N)"
+
+  echo
+  echo "Render performance diagnostics"
+  hr
+  echo "Download cache size scan: $((t2 - t1)) ms"
+  echo "Runtime cache size scan:  $((t3 - t2)) ms"
+  echo "sdkmanager --list:        $((t4 - t3)) ms"
+  echo "collect_render_data(1):   $((t5 - t4)) ms"
+  echo "Total:                    $((t5 - t0)) ms"
+  echo
+  echo "Current values"
+  echo "  Download cache: $CACHE_SIZE_DISPLAY"
+  echo "  Runtime cache:  $RUNTIME_CACHE_SIZE_DISPLAY"
+  echo "  Emu API (resolved): ${RESOLVED_EMULATOR_API:-n/a}"
+}
+
+perf_render_diagnostics_raw() {
+  ensure_dirs
+  write_env_files
+  export_portable_env
+
+  local t0 t1 t2 t3 t4 t5
+  t0="$(date +%s%3N)"
+
+  t1="$(date +%s%3N)"
+  dir_size_human "$DOWNLOAD_CACHE_DIR" >/dev/null
+  t2="$(date +%s%3N)"
+
+  dir_size_human "$CACHE_DIR" >/dev/null
+  t3="$(date +%s%3N)"
+
+  sdkmanager --list >/dev/null 2>&1 || true
+  t4="$(date +%s%3N)"
+
+  LAST_CACHE_SIZE_REFRESH_TS=0
+  RESOLVED_EMULATOR_API=""
+  collect_render_data 1
+  t5="$(date +%s%3N)"
+
+  echo
+  echo "Render performance diagnostics (raw/full)"
+  hr
+  echo "Download cache size scan: $((t2 - t1)) ms"
+  echo "Runtime cache size scan:  $((t3 - t2)) ms"
+  echo "sdkmanager --list:        $((t4 - t3)) ms"
+  echo "collect_render_data(1):   $((t5 - t4)) ms"
+  echo "Total:                    $((t5 - t0)) ms"
+}
+
+perf_render_diagnostics_compare() {
+  ensure_dirs
+  write_env_files
+  export_portable_env
+
+  local o_start o_end r_start r_end
+  local optimized_ms raw_ms delta_ms
+
+  o_start="$(date +%s%3N)"
+  collect_render_data 0
+  o_end="$(date +%s%3N)"
+
+  LAST_CACHE_SIZE_REFRESH_TS=0
+  RESOLVED_EMULATOR_API=""
+  r_start="$(date +%s%3N)"
+  collect_render_data 1
+  r_end="$(date +%s%3N)"
+
+  optimized_ms=$((o_end - o_start))
+  raw_ms=$((r_end - r_start))
+  delta_ms=$((raw_ms - optimized_ms))
+
+  echo
+  echo "Render performance compare"
+  hr
+  echo "Optimized collect_render_data(0): ${optimized_ms} ms"
+  echo "Raw/full collect_render_data(1):  ${raw_ms} ms"
+  echo "Delta (raw - optimized):          ${delta_ms} ms"
+}
+
+get_render_emulator_api() {
+  if [[ "$EMULATOR_API" == "latest" ]]; then
+    if [[ -n "$RESOLVED_EMULATOR_API" ]]; then
+      printf "%s\n" "$RESOLVED_EMULATOR_API"
+    else
+      printf "%s\n" "latest"
+    fi
+  else
+    printf "%s\n" "$EMULATOR_API"
   fi
 }
 
@@ -67,7 +209,7 @@ Usage:
   ./setup-android-portable.sh [install_dir] [options]
 
 Options:
-  --mode <all|base|studio|emulator|ide-ready|reinstall|status|versions|verify|open-studio|enter-env|clear-cache|clear-sdk-cache>
+  --mode <all|base|studio|emulator|ide-ready|reinstall|status|versions|verify|open-studio|enter-env|clear-cache|clear-sdk-cache|perf|perf-raw|perf-compare>
   --dir <path>
   --jdk <17|21>
   --java-mode <temurin|system|custom>
@@ -344,7 +486,7 @@ show_settings_summary() {
   local emu_state="OFF"
   [[ "$EMULATOR_ENABLED" == "1" ]] && emu_state="ON"
   local emu_api
-  emu_api="$(get_emulator_api 2>/dev/null || echo latest)"
+  emu_api="$(get_render_emulator_api)"
   local cache_preset
   cache_preset="$(get_cache_preset)"
   printf "%bCurrent settings:%b " "$C_INFO" "$C_RESET"
@@ -1091,7 +1233,7 @@ install_studio() {
   if ! tar -tzf "$archive" >/dev/null 2>&1; then
     warn "Cached Android Studio archive is invalid, re-downloading"
     rm -f "$archive"
-    if ! download_file "$STUDIO_URL" "$archive" "all"; then
+    if ! download_file "$STUDIO_URL" "$archive" "studio"; then
       warn "Failed to re-download Android Studio archive"
       return 1
     fi
@@ -1120,8 +1262,8 @@ show_status() {
   echo
   printf "Root: %s\n" "$TARGET_ROOT"
   printf "Android dir: %s\n" "$(root_rel "$ANDROID_DIR")"
-  printf "Download cache: %s (%s)\n" "$(root_rel "$DOWNLOAD_CACHE_DIR")" "$(dir_size_human "$DOWNLOAD_CACHE_DIR")"
-  printf "Runtime cache: %s (%s)\n\n" "$(root_rel "$CACHE_DIR")" "$(dir_size_human "$CACHE_DIR")"
+  printf "Download cache: %s (%s)\n" "$(root_rel "$DOWNLOAD_CACHE_DIR")" "$CACHE_SIZE_DISPLAY"
+  printf "Runtime cache: %s (%s)\n\n" "$(root_rel "$CACHE_DIR")" "$RUNTIME_CACHE_SIZE_DISPLAY"
 
   # Fresh state: no install traces yet. Keep output short and beginner-friendly.
   if [[ ! -x "$JAVA_DIR/bin/java" && ! -x "$TOOLS_DIR/bin/sdkmanager" && ! -x "$SDK_DIR/platform-tools/adb" && ! -x "$STUDIO_DIR/bin/studio.sh" ]]; then
@@ -1151,7 +1293,7 @@ show_status() {
   [[ -x "$STUDIO_DIR/bin/studio.sh" ]] && check_line "Android Studio" OK "$(root_rel "$STUDIO_DIR")" || check_line "Android Studio" WARN "not installed"
   if [[ "$EMULATOR_ENABLED" == "1" ]]; then
     local emu_api emu_img
-    emu_api="$(get_emulator_api || true)"
+    emu_api="$(get_render_emulator_api)"
     emu_img="$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
     [[ -x "$SDK_DIR/emulator/emulator" ]] && check_line "emulator" OK "installed" || { check_line "emulator" WARN "not installed"; bad=1; }
     [[ -d "$emu_img" ]] && check_line "emu image ${emu_api}" OK "${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" || { check_line "emu image ${emu_api}" WARN "not installed"; bad=1; }
@@ -1409,6 +1551,8 @@ clear_download_cache() {
   rm -rf "$DOWNLOAD_CACHE_DIR"/*
   after="$(dir_size_human "$DOWNLOAD_CACHE_DIR")"
   ok "Download cache cleared: $before -> $after"
+  LAST_CACHE_SIZE_REFRESH_TS=0
+  FORCE_FULL_REFRESH=1
 }
 
 clear_runtime_cache() {
@@ -1442,6 +1586,8 @@ clear_runtime_cache() {
 
   after="$(dir_size_human "$CACHE_DIR")"
   ok "Runtime cache cleared: $before -> $after"
+  LAST_CACHE_SIZE_REFRESH_TS=0
+  FORCE_FULL_REFRESH=1
 }
 
 reinstall_all() {
@@ -1632,6 +1778,8 @@ interactive_menu() {
   write_env_files
   while true; do
     SKIP_PAUSE=0
+    collect_render_data "$FORCE_FULL_REFRESH"
+    FORCE_FULL_REFRESH=0
     if [[ -t 1 ]]; then
       clear
     fi
@@ -1728,6 +1876,13 @@ interactive_menu() {
         ;;
     esac
 
+    if [[ "$choice" == "8" ]]; then
+      FORCE_FULL_REFRESH=1
+    fi
+    case "$choice" in
+      4|5|6|7) FORCE_FULL_REFRESH=1 ;;
+    esac
+
     if [[ "$choice" != "8" && "$SKIP_PAUSE" -eq 0 ]]; then
       echo
       read -r -p "Press Enter to continue..." _
@@ -1757,6 +1912,9 @@ case "$MODE" in
   enter-env) ensure_dirs; enter_env_shell ;;
   clear-cache) ensure_dirs; clear_download_cache ;;
   clear-sdk-cache) ensure_dirs; rm -rf "$SDK_PACKAGE_CACHE_DIR"/*; ok "SDK package cache cleared" ;;
+  perf) perf_render_diagnostics ;;
+  perf-raw) perf_render_diagnostics_raw ;;
+  perf-compare) perf_render_diagnostics_compare ;;
   *) fail "Unsupported mode: $MODE" ;;
 esac
 

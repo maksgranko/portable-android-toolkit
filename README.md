@@ -34,6 +34,9 @@ Install to custom path:
 - `status` - detailed health/status dashboard
 - `versions` - show installed tool/package versions
 - `verify` - validate Java/SDK consistency and required components
+- `perf` - print render performance diagnostics
+- `perf-raw` - print full/raw render diagnostics (forced heavy refresh)
+- `perf-compare` - compare optimized vs raw render collection timing
 - `open-studio` - run Android Studio with portable env
 - `enter-env` - open shell with portable env loaded
 - `clear-cache` - clear download cache (`cache/`, including `cache/sdk-packages/`)
