@@ -24,12 +24,11 @@ Install to custom path:
 
 ## Modes
 
-- `all` - JDK + Android SDK + Android Studio
 - `base` - JDK + Android SDK (for Gradle CLI builds)
 - `studio` - only Android Studio
 - `emulator` - install emulator package + selected system image profile
-- `ide-ready` - base + studio + emulator profile
-  - also installs a wizard-compatible API 35 Google APIs x86_64 emulator profile
+- `all` - alias of `ide-ready` (base + studio + emulator profile)
+- `ide-ready` - canonical internal mode (same behavior as `all`)
 - `reinstall` - smart reinstall of currently installed components
 - `status` - detailed health/status dashboard
 - `versions` - show installed tool/package versions
@@ -40,7 +39,6 @@ Install to custom path:
 - `open-studio` - run Android Studio with portable env
 - `enter-env` - open shell with portable env loaded
 - `clear-cache` - clear download cache (`cache/`, including `cache/sdk-packages/`)
-- `clear-sdk-cache` - clear only SDK package cache (`cache/sdk-packages/`)
 
 ## Java selection
 
@@ -58,7 +56,7 @@ Examples:
 ./setup-android-portable.sh --mode all --java-mode custom --java-url "https://example.com/jdk.tar.gz"
 ```
 
-In interactive mode, use `3) Java Settings`.
+In interactive mode, use `6) Java Settings`.
 
 In `Install` menu you can also choose `Reinstall component` and reinstall only:
 
@@ -145,12 +143,13 @@ SDK package cache in `Settings`:
 - `SDK package cache: ON` - cache installed SDK folders (`platform-tools`, selected `platforms`, selected `build-tools`) in `cache/sdk-packages/`
 - `SDK package cache: OFF` - do not store/restore SDK package folders from cache
 
-Emulator profile in `Settings` (latest defaults):
+Emulator profile in `Settings`:
 
 - `Emulator: OFF` by default (enabled by Aggressive cache preset or manually)
-- API: `latest` by default
-- Image type: `google_apis` by default (lightweight, no Play Store)
-- ABI: `x86_64` by default
+- Profile type:
+  - `Default` - user-configurable API/Image/ABI
+  - `Wizard compatible` - fixed to `android-35` + `google_apis` + `x86_64`
+- API/Image/ABI selectors apply to `Default` profile
 - Auto-create AVD: `ON` by default
 
 You can also toggle:
