@@ -143,6 +143,17 @@ EOF
 
 load_config
 
+# First-run Java preference:
+# - Use system Java if present.
+# - Otherwise use portable Temurin.
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  if command -v java >/dev/null 2>&1; then
+    JAVA_MODE="system"
+  else
+    JAVA_MODE="temurin"
+  fi
+fi
+
 normalize_settings() {
   case "${JAVA_ARCHIVE_CACHE:-1}" in
     0|1) ;;
@@ -351,7 +362,7 @@ settings_menu() {
   printf "  %b5) Emulator profile%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$EMULATOR_ENABLED" == "1" ]] && echo ON || echo OFF)"
   printf "  %b6) Advanced Sources%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$ADVANCED_SOURCES_ENABLED" == "1" ]] && echo ON || echo OFF)"
   printf "  %b7) Clear download cache%b\n" "$C_WARN" "$C_RESET"
-  printf "  %b8) Clear SDK package cache%b\n" "$C_WARN" "$C_RESET"
+  printf "  %b8) Clear runtime cache%b\n" "$C_WARN" "$C_RESET"
   printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
   read -r -p "> " schoice
   case "$schoice" in
@@ -608,9 +619,7 @@ settings_menu() {
       clear_download_cache
       ;;
     8)
-      mkdir -p "$SDK_PACKAGE_CACHE_DIR"
-      rm -rf "$SDK_PACKAGE_CACHE_DIR"/*
-      ok "SDK package cache cleared"
+      clear_runtime_cache
       ;;
     0)
       SKIP_PAUSE=1
@@ -1400,6 +1409,39 @@ clear_download_cache() {
   rm -rf "$DOWNLOAD_CACHE_DIR"/*
   after="$(dir_size_human "$DOWNLOAD_CACHE_DIR")"
   ok "Download cache cleared: $before -> $after"
+}
+
+clear_runtime_cache() {
+  local before after
+  before="$(dir_size_human "$CACHE_DIR")"
+
+  rm -rf "$CACHE_DIR"/*
+  if [[ -d "$ANDROID_DIR/.android/cache" ]]; then
+    rm -rf "$ANDROID_DIR/.android/cache"/*
+  fi
+
+  if [[ -d "$ANDROID_DIR/.gradle/caches" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "Also clear Gradle runtime caches (android/.gradle/caches)? [y/n]: " gans
+      case "$(parse_bool_input "$gans")" in
+        1)
+          rm -rf "$ANDROID_DIR/.gradle/caches"/*
+          ok "Gradle runtime caches cleared"
+          ;;
+        0|"")
+          ok "Skipped Gradle runtime caches"
+          ;;
+        *)
+          warn "Unknown answer, skipped Gradle runtime caches"
+          ;;
+      esac
+    else
+      warn "Non-interactive mode: skipped Gradle runtime caches"
+    fi
+  fi
+
+  after="$(dir_size_human "$CACHE_DIR")"
+  ok "Runtime cache cleared: $before -> $after"
 }
 
 reinstall_all() {

@@ -36,8 +36,8 @@ Install to custom path:
 - `verify` - validate Java/SDK consistency and required components
 - `open-studio` - run Android Studio with portable env
 - `enter-env` - open shell with portable env loaded
-- `clear-cache` - clear download cache (`cache/`)
-- `clear-sdk-cache` - clear SDK package cache (`cache/sdk-packages/`)
+- `clear-cache` - clear download cache (`cache/`, including `cache/sdk-packages/`)
+- `clear-sdk-cache` - clear only SDK package cache (`cache/sdk-packages/`)
 
 ## Java selection
 
@@ -125,9 +125,9 @@ Download archives are cached near the setup script:
 
 - `cache/` (JDK archives, cmdline-tools zip, Android Studio tar.gz)
 
-You can configure download cache behavior in interactive menu:
+You can configure cache behavior in interactive menu:
 
-- `Settings` -> `Cache mode`
+- `Settings` -> `Cache profile`
 
 Cache modes in `Settings`:
 
