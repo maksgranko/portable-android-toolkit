@@ -1295,8 +1295,8 @@ show_status() {
     local emu_api emu_img
     emu_api="$(get_render_emulator_api)"
     emu_img="$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
-    [[ -x "$SDK_DIR/emulator/emulator" ]] && check_line "emulator" OK "installed" || { check_line "emulator" WARN "not installed"; bad=1; }
-    [[ -d "$emu_img" ]] && check_line "emu image ${emu_api}" OK "${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" || { check_line "emu image ${emu_api}" WARN "not installed"; bad=1; }
+    [[ -x "$SDK_DIR/emulator/emulator" ]] && check_line "emulator" OK "installed" || check_line "emulator" WARN "not installed"
+    [[ -d "$emu_img" ]] && check_line "emu image ${emu_api}" OK "${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" || check_line "emu image ${emu_api}" WARN "not installed"
   fi
 
   local iso_missing=0
