@@ -9,9 +9,20 @@ ASSUME_YES=0
 JDK_MAJOR="21"
 JAVA_MODE="temurin"
 JAVA_CUSTOM_URL=""
-DOWNLOAD_CACHE_MODE="all"
+JAVA_ARCHIVE_CACHE="1"
+SDK_TOOLS_ARCHIVE_CACHE="1"
+STUDIO_INSTALLER_CACHE="0"
 PICK_FROM_INSTALLED_ONLY="0"
-SDK_PACKAGE_CACHE="1"
+SDK_PACKAGE_CACHE="0"
+ADVANCED_SOURCES_ENABLED="0"
+CMDLINE_TOOLS_CUSTOM_URL=""
+STUDIO_CUSTOM_URL=""
+EMULATOR_ENABLED="1"
+EMULATOR_API="latest"
+EMULATOR_IMAGE_TYPE="google_apis"
+EMULATOR_ABI="x86_64"
+EMULATOR_AUTO_CREATE_AVD="1"
+EMULATOR_AVD_NAME="portable-avd"
 ANDROID_PLATFORM="android-35"
 BUILD_TOOLS="35.0.0"
 
@@ -56,7 +67,7 @@ Usage:
   ./setup-android-portable.sh [install_dir] [options]
 
 Options:
-  --mode <all|base|studio|reinstall|status|versions|verify|open-studio|enter-env|clear-cache>
+  --mode <all|base|studio|emulator|ide-ready|reinstall|status|versions|verify|open-studio|enter-env|clear-cache|clear-sdk-cache>
   --dir <path>
   --jdk <17|21>
   --java-mode <temurin|system|custom>
@@ -111,9 +122,20 @@ save_config() {
 JAVA_MODE="$JAVA_MODE"
 JDK_MAJOR="$JDK_MAJOR"
 JAVA_CUSTOM_URL="$JAVA_CUSTOM_URL"
-DOWNLOAD_CACHE_MODE="$DOWNLOAD_CACHE_MODE"
+JAVA_ARCHIVE_CACHE="$JAVA_ARCHIVE_CACHE"
+SDK_TOOLS_ARCHIVE_CACHE="$SDK_TOOLS_ARCHIVE_CACHE"
+STUDIO_INSTALLER_CACHE="$STUDIO_INSTALLER_CACHE"
 PICK_FROM_INSTALLED_ONLY="$PICK_FROM_INSTALLED_ONLY"
 SDK_PACKAGE_CACHE="$SDK_PACKAGE_CACHE"
+ADVANCED_SOURCES_ENABLED="$ADVANCED_SOURCES_ENABLED"
+CMDLINE_TOOLS_CUSTOM_URL="$CMDLINE_TOOLS_CUSTOM_URL"
+STUDIO_CUSTOM_URL="$STUDIO_CUSTOM_URL"
+EMULATOR_ENABLED="$EMULATOR_ENABLED"
+EMULATOR_API="$EMULATOR_API"
+EMULATOR_IMAGE_TYPE="$EMULATOR_IMAGE_TYPE"
+EMULATOR_ABI="$EMULATOR_ABI"
+EMULATOR_AUTO_CREATE_AVD="$EMULATOR_AUTO_CREATE_AVD"
+EMULATOR_AVD_NAME="$EMULATOR_AVD_NAME"
 ANDROID_PLATFORM="$ANDROID_PLATFORM"
 BUILD_TOOLS="$BUILD_TOOLS"
 EOF
@@ -122,16 +144,17 @@ EOF
 load_config
 
 normalize_settings() {
-  if [[ -n "${USE_DOWNLOAD_CACHE:-}" && -z "${DOWNLOAD_CACHE_MODE:-}" ]]; then
-    if [[ "$USE_DOWNLOAD_CACHE" == "1" ]]; then
-      DOWNLOAD_CACHE_MODE="all"
-    else
-      DOWNLOAD_CACHE_MODE="none"
-    fi
-  fi
-  case "${DOWNLOAD_CACHE_MODE:-all}" in
-    all|java|none) ;;
-    *) DOWNLOAD_CACHE_MODE="all" ;;
+  case "${JAVA_ARCHIVE_CACHE:-1}" in
+    0|1) ;;
+    *) JAVA_ARCHIVE_CACHE="1" ;;
+  esac
+  case "${SDK_TOOLS_ARCHIVE_CACHE:-1}" in
+    0|1) ;;
+    *) SDK_TOOLS_ARCHIVE_CACHE="1" ;;
+  esac
+  case "${STUDIO_INSTALLER_CACHE:-0}" in
+    0|1) ;;
+    *) STUDIO_INSTALLER_CACHE="0" ;;
   esac
   case "${PICK_FROM_INSTALLED_ONLY:-0}" in
     0|1) ;;
@@ -141,11 +164,43 @@ normalize_settings() {
     0|1) ;;
     *) SDK_PACKAGE_CACHE="1" ;;
   esac
+  case "${ADVANCED_SOURCES_ENABLED:-0}" in
+    0|1) ;;
+    *) ADVANCED_SOURCES_ENABLED="0" ;;
+  esac
+  case "${EMULATOR_ENABLED:-1}" in
+    0|1) ;;
+    *) EMULATOR_ENABLED="1" ;;
+  esac
+  case "${EMULATOR_AUTO_CREATE_AVD:-1}" in
+    0|1) ;;
+    *) EMULATOR_AUTO_CREATE_AVD="1" ;;
+  esac
+  case "${EMULATOR_IMAGE_TYPE:-google_apis}" in
+    google_apis|google_apis_playstore|default) ;;
+    *) EMULATOR_IMAGE_TYPE="google_apis" ;;
+  esac
+  case "${EMULATOR_ABI:-x86_64}" in
+    x86_64|arm64-v8a) ;;
+    *) EMULATOR_ABI="x86_64" ;;
+  esac
+  EMULATOR_API="${EMULATOR_API:-latest}"
+  EMULATOR_AVD_NAME="${EMULATOR_AVD_NAME:-portable-avd}"
 }
 
 normalize_settings
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+parse_bool_input() {
+  local value="$1"
+  case "$value" in
+    1|y|Y|yes|YES|Yes|on|ON|On|true|TRUE|True) echo "1" ;;
+    0|n|N|no|NO|No|off|OFF|Off|false|FALSE|False) echo "0" ;;
+    "") echo "" ;;
+    *) echo "invalid" ;;
+  esac
+}
 
 release_lock() {
   if [[ -f "$LOCK_FILE" ]]; then
@@ -165,9 +220,9 @@ acquire_lock() {
     if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
       warn "Another setup instance is already running (PID: $existing_pid)"
       if [[ -t 0 ]]; then
-        read -r -p "Terminate previous instance and continue? [y/N]: " ans
+        read -r -p "Terminate previous instance and continue? [y/n]: " ans
         case "$ans" in
-          y|Y|yes|YES)
+          y|Y|yes|YES|Yes)
             if kill "$existing_pid" 2>/dev/null; then
               ok "Previous instance terminated"
               sleep 1
@@ -175,7 +230,11 @@ acquire_lock() {
               fail "Could not terminate running instance: $existing_pid"
             fi
             ;;
+          n|N|no|NO|No|"")
+            fail "Aborted to avoid concurrent setup runs"
+            ;;
           *)
+            warn "Unknown answer: $ans"
             fail "Aborted to avoid concurrent setup runs"
             ;;
         esac
@@ -204,11 +263,43 @@ ensure_tools() {
 
 cache_allowed_for() {
   local kind="$1"
-  case "$DOWNLOAD_CACHE_MODE" in
-    all) return 0 ;;
-    java) [[ "$kind" == "java" ]] && return 0 || return 1 ;;
-    none) return 1 ;;
-    *) return 0 ;;
+  case "$kind" in
+    java) [[ "$JAVA_ARCHIVE_CACHE" == "1" ]] && return 0 || return 1 ;;
+    sdktools) [[ "$SDK_TOOLS_ARCHIVE_CACHE" == "1" ]] && return 0 || return 1 ;;
+    studio) [[ "$STUDIO_INSTALLER_CACHE" == "1" ]] && return 0 || return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
+get_cache_preset() {
+  if [[ "$JAVA_ARCHIVE_CACHE" == "1" && "$SDK_TOOLS_ARCHIVE_CACHE" == "1" && "$STUDIO_INSTALLER_CACHE" == "0" && "$SDK_PACKAGE_CACHE" == "0" ]]; then
+    echo "Minimal"
+  elif [[ "$JAVA_ARCHIVE_CACHE" == "1" && "$SDK_TOOLS_ARCHIVE_CACHE" == "1" && "$STUDIO_INSTALLER_CACHE" == "0" && "$SDK_PACKAGE_CACHE" == "1" ]]; then
+    echo "Balanced"
+  elif [[ "$JAVA_ARCHIVE_CACHE" == "1" && "$SDK_TOOLS_ARCHIVE_CACHE" == "1" && "$STUDIO_INSTALLER_CACHE" == "1" && "$SDK_PACKAGE_CACHE" == "1" ]]; then
+    echo "Aggressive"
+  elif [[ "$JAVA_ARCHIVE_CACHE" == "0" && "$SDK_TOOLS_ARCHIVE_CACHE" == "0" && "$STUDIO_INSTALLER_CACHE" == "0" && "$SDK_PACKAGE_CACHE" == "0" ]]; then
+    echo "No cache"
+  else
+    echo "Custom"
+  fi
+}
+
+apply_cache_preset() {
+  local preset="$1"
+  case "$preset" in
+    minimal)
+      JAVA_ARCHIVE_CACHE="1"; SDK_TOOLS_ARCHIVE_CACHE="1"; STUDIO_INSTALLER_CACHE="0"; SDK_PACKAGE_CACHE="0"
+      ;;
+    balanced)
+      JAVA_ARCHIVE_CACHE="1"; SDK_TOOLS_ARCHIVE_CACHE="1"; STUDIO_INSTALLER_CACHE="0"; SDK_PACKAGE_CACHE="1"
+      ;;
+    aggressive)
+      JAVA_ARCHIVE_CACHE="1"; SDK_TOOLS_ARCHIVE_CACHE="1"; STUDIO_INSTALLER_CACHE="1"; SDK_PACKAGE_CACHE="1"
+      ;;
+    nocache)
+      JAVA_ARCHIVE_CACHE="0"; SDK_TOOLS_ARCHIVE_CACHE="0"; STUDIO_INSTALLER_CACHE="0"; SDK_PACKAGE_CACHE="0"
+      ;;
   esac
 }
 
@@ -235,44 +326,77 @@ show_settings_summary() {
   if [[ "$JAVA_MODE" == "temurin" ]]; then
     java_summary="$JAVA_MODE (JDK $JDK_MAJOR)"
   fi
-  local pick_mode="available"
-  [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && pick_mode="installed-only"
   local sdk_cache_mode="OFF"
   [[ "$SDK_PACKAGE_CACHE" == "1" ]] && sdk_cache_mode="ON"
   local pick_state="OFF"
   [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && pick_state="ON"
+  local emu_state="OFF"
+  [[ "$EMULATOR_ENABLED" == "1" ]] && emu_state="ON"
+  local emu_api
+  emu_api="$(get_emulator_api 2>/dev/null || echo latest)"
+  local cache_preset
+  cache_preset="$(get_cache_preset)"
   printf "%bCurrent settings:%b " "$C_INFO" "$C_RESET"
-  printf "%bJava:%b %s  %b|%b  %bCache:%b %s, %bPick:%b %s, %bSDK:%b %s" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$DOWNLOAD_CACHE_MODE" "$C_INFO" "$C_RESET" "$pick_state" "$C_INFO" "$C_RESET" "$sdk_cache_mode"
+  printf "%bJava:%b %s  %b|%b  %bCache:%b %s, %bPick:%b %s, %bSDK:%b %s, %bEmu:%b %s(%s/%s/%s)" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$cache_preset" "$C_INFO" "$C_RESET" "$pick_state" "$C_INFO" "$C_RESET" "$sdk_cache_mode" "$C_INFO" "$C_RESET" "$emu_state" "$emu_api" "$EMULATOR_IMAGE_TYPE" "$EMULATOR_ABI"
   printf "\n"
 }
 
 settings_menu() {
   echo
   printf "%bSettings:%b\n" "$C_INFO" "$C_RESET"
-  printf "  %b1) Cache mode%b (current: %s)\n" "$C_WARN" "$C_RESET" "$DOWNLOAD_CACHE_MODE"
+  printf "  %b1) Cache profile%b (current: %s)\n" "$C_WARN" "$C_RESET" "$(get_cache_preset)"
   printf "  %b2) Set Android platform%b (current: %s)\n" "$C_INFO" "$C_RESET" "$ANDROID_PLATFORM"
   printf "  %b3) Set build-tools version%b (current: %s)\n" "$C_INFO" "$C_RESET" "$BUILD_TOOLS"
   printf "  %b4) Pick from installed only%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && echo ON || echo OFF)"
-  printf "  %b5) SDK package cache%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$SDK_PACKAGE_CACHE" == "1" ]] && echo ON || echo OFF)"
-  printf "  %b6) Clear download cache%b\n" "$C_WARN" "$C_RESET"
-  printf "  %b7) Clear SDK package cache%b\n" "$C_WARN" "$C_RESET"
+  printf "  %b5) Emulator profile%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$EMULATOR_ENABLED" == "1" ]] && echo ON || echo OFF)"
+  printf "  %b6) Advanced Sources%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$ADVANCED_SOURCES_ENABLED" == "1" ]] && echo ON || echo OFF)"
+  printf "  %b7) Clear download cache%b\n" "$C_WARN" "$C_RESET"
+  printf "  %b8) Clear SDK package cache%b\n" "$C_WARN" "$C_RESET"
   printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
   read -r -p "> " schoice
   case "$schoice" in
     1)
-      printf "%bCache mode:%b\n" "$C_INFO" "$C_RESET"
-      printf "  %b1) all%b   (cache Java + SDK + Studio archives)\n" "$C_INFO" "$C_RESET"
-      printf "  %b2) java%b  (cache only Java archives)\n" "$C_INFO" "$C_RESET"
-      printf "  %b3) none%b  (always download fresh)\n" "$C_INFO" "$C_RESET"
+      printf "%bCache profile:%b\n" "$C_INFO" "$C_RESET"
+      printf "  %b1) Minimal%b\n" "$C_INFO" "$C_RESET"
+      printf "  %b2) Balanced%b\n" "$C_INFO" "$C_RESET"
+      printf "  %b3) Aggressive%b\n" "$C_INFO" "$C_RESET"
+      printf "  %b4) No cache%b\n" "$C_INFO" "$C_RESET"
+      printf "  %b5) Manual toggles%b\n" "$C_INFO" "$C_RESET"
       read -r -p "> " cmode
       case "$cmode" in
-        1) DOWNLOAD_CACHE_MODE="all" ;;
-        2) DOWNLOAD_CACHE_MODE="java" ;;
-        3) DOWNLOAD_CACHE_MODE="none" ;;
-        *) warn "Unknown cache mode" ;;
+        1) apply_cache_preset minimal ;;
+        2) apply_cache_preset balanced ;;
+        3) apply_cache_preset aggressive ;;
+        4) apply_cache_preset nocache ;;
+        5)
+          echo "Toggle cache flags (1=ON,0=OFF)"
+          echo "You can use: 1/0, y/n, yes/no, on/off"
+          read -r -p "Java archive cache [${JAVA_ARCHIVE_CACHE}]: " v1
+          read -r -p "SDK tools archive cache [${SDK_TOOLS_ARCHIVE_CACHE}]: " v2
+          read -r -p "Studio installer cache [${STUDIO_INSTALLER_CACHE}]: " v3
+          read -r -p "SDK package cache [${SDK_PACKAGE_CACHE}]: " v4
+
+          local b1 b2 b3 b4
+          b1="$(parse_bool_input "$v1")"
+          b2="$(parse_bool_input "$v2")"
+          b3="$(parse_bool_input "$v3")"
+          b4="$(parse_bool_input "$v4")"
+
+          [[ "$b1" == "invalid" ]] && warn "Invalid value for Java archive cache, keeping current"
+          [[ "$b2" == "invalid" ]] && warn "Invalid value for SDK tools archive cache, keeping current"
+          [[ "$b3" == "invalid" ]] && warn "Invalid value for Studio installer cache, keeping current"
+          [[ "$b4" == "invalid" ]] && warn "Invalid value for SDK package cache, keeping current"
+
+          [[ -n "$b1" && "$b1" != "invalid" ]] && JAVA_ARCHIVE_CACHE="$b1"
+          [[ -n "$b2" && "$b2" != "invalid" ]] && SDK_TOOLS_ARCHIVE_CACHE="$b2"
+          [[ -n "$b3" && "$b3" != "invalid" ]] && STUDIO_INSTALLER_CACHE="$b3"
+          [[ -n "$b4" && "$b4" != "invalid" ]] && SDK_PACKAGE_CACHE="$b4"
+          normalize_settings
+          ;;
+        *) warn "Unknown cache profile option" ;;
       esac
       save_config
-      ok "Download cache mode is now: $DOWNLOAD_CACHE_MODE"
+      ok "Cache profile now: $(get_cache_preset)"
       ;;
     2)
       local platforms latest_platform installed_platforms
@@ -380,18 +504,110 @@ settings_menu() {
       ok "Pick from installed only: $([[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && echo ON || echo OFF)"
       ;;
     5)
-      if [[ "$SDK_PACKAGE_CACHE" == "1" ]]; then
-        SDK_PACKAGE_CACHE="0"
-      else
-        SDK_PACKAGE_CACHE="1"
-      fi
-      save_config
-      ok "SDK package cache: $([[ "$SDK_PACKAGE_CACHE" == "1" ]] && echo ON || echo OFF)"
+      echo "Emulator profile:"
+      echo "  1) Toggle emulator (current: $([[ "$EMULATOR_ENABLED" == "1" ]] && echo ON || echo OFF))"
+      echo "  2) API (current: $EMULATOR_API; 0=latest)"
+      echo "  3) Image type (current: $EMULATOR_IMAGE_TYPE)"
+      echo "  4) ABI (current: $EMULATOR_ABI)"
+      echo "  5) Auto-create AVD (current: $([[ "$EMULATOR_AUTO_CREATE_AVD" == "1" ]] && echo ON || echo OFF))"
+      echo "  6) AVD name (current: $EMULATOR_AVD_NAME)"
+      echo "  0) Back"
+      read -r -p "> " echoice
+      case "$echoice" in
+        1)
+          [[ "$EMULATOR_ENABLED" == "1" ]] && EMULATOR_ENABLED="0" || EMULATOR_ENABLED="1"
+          save_config
+          ok "Emulator: $([[ "$EMULATOR_ENABLED" == "1" ]] && echo ON || echo OFF)"
+          ;;
+        2)
+          read -r -p "Emulator API (android-36 or 0=latest): " eapi
+          if [[ -z "$eapi" ]]; then
+            ok "Emulator API unchanged: $EMULATOR_API"
+          elif [[ "$eapi" == "0" ]]; then
+            EMULATOR_API="latest"
+            save_config
+            ok "Emulator API set to latest"
+          else
+            EMULATOR_API="$eapi"
+            save_config
+            ok "Emulator API set to $EMULATOR_API"
+          fi
+          ;;
+        3)
+          echo "Image type: 1) google_apis 2) google_apis_playstore 3) default"
+          read -r -p "> " etype
+          case "$etype" in
+            1) EMULATOR_IMAGE_TYPE="google_apis" ;;
+            2) EMULATOR_IMAGE_TYPE="google_apis_playstore" ;;
+            3) EMULATOR_IMAGE_TYPE="default" ;;
+            *) warn "Unknown image type" ;;
+          esac
+          save_config
+          ;;
+        4)
+          echo "ABI: 1) x86_64 2) arm64-v8a"
+          read -r -p "> " eabi
+          case "$eabi" in
+            1) EMULATOR_ABI="x86_64" ;;
+            2) EMULATOR_ABI="arm64-v8a" ;;
+            *) warn "Unknown ABI" ;;
+          esac
+          save_config
+          ;;
+        5)
+          [[ "$EMULATOR_AUTO_CREATE_AVD" == "1" ]] && EMULATOR_AUTO_CREATE_AVD="0" || EMULATOR_AUTO_CREATE_AVD="1"
+          save_config
+          ok "Auto-create AVD: $([[ "$EMULATOR_AUTO_CREATE_AVD" == "1" ]] && echo ON || echo OFF)"
+          ;;
+        6)
+          read -r -p "AVD name: " avdn
+          if [[ -n "$avdn" ]]; then
+            EMULATOR_AVD_NAME="$avdn"
+            save_config
+          fi
+          ;;
+        0) SKIP_PAUSE=1 ;;
+        *) warn "Unknown emulator profile option" ;;
+      esac
       ;;
     6)
-      clear_download_cache
+      echo "Advanced Sources:"
+      echo "  1) Toggle custom sources (current: $([[ "$ADVANCED_SOURCES_ENABLED" == "1" ]] && echo ON || echo OFF))"
+      echo "  2) Cmdline-tools URL override"
+      echo "  3) Studio URL override"
+      echo "  4) Reset overrides"
+      echo "  0) Back"
+      read -r -p "> " asrc
+      case "$asrc" in
+        1)
+          [[ "$ADVANCED_SOURCES_ENABLED" == "1" ]] && ADVANCED_SOURCES_ENABLED="0" || ADVANCED_SOURCES_ENABLED="1"
+          save_config
+          ;;
+        2)
+          read -r -p "Cmdline-tools URL (empty to clear): " u
+          CMDLINE_TOOLS_CUSTOM_URL="$u"
+          save_config
+          ;;
+        3)
+          read -r -p "Studio URL (empty to clear): " su
+          STUDIO_CUSTOM_URL="$su"
+          save_config
+          ;;
+        4)
+          CMDLINE_TOOLS_CUSTOM_URL=""
+          STUDIO_CUSTOM_URL=""
+          ADVANCED_SOURCES_ENABLED="0"
+          save_config
+          ok "Advanced source overrides reset"
+          ;;
+        0) SKIP_PAUSE=1 ;;
+        *) warn "Unknown advanced sources option" ;;
+      esac
       ;;
     7)
+      clear_download_cache
+      ;;
+    8)
       mkdir -p "$SDK_PACKAGE_CACHE_DIR"
       rm -rf "$SDK_PACKAGE_CACHE_DIR"/*
       ok "SDK package cache cleared"
@@ -477,6 +693,30 @@ get_cached_jdk_versions() {
   fi
 }
 
+resolve_latest_emulator_api() {
+  local platforms
+  platforms="$(get_available_platforms)"
+  if [[ -z "$platforms" ]]; then
+    return 1
+  fi
+  printf "%s\n" "$platforms" | tail -n 1
+}
+
+get_emulator_api() {
+  if [[ "$EMULATOR_API" == "latest" ]]; then
+    resolve_latest_emulator_api
+  else
+    printf "%s\n" "$EMULATOR_API"
+  fi
+}
+
+emulator_system_image_package() {
+  local api
+  api="$(get_emulator_api || true)"
+  [[ -n "$api" ]] || return 1
+  printf "system-images;%s;%s;%s\n" "$api" "$EMULATOR_IMAGE_TYPE" "$EMULATOR_ABI"
+}
+
 print_short_list() {
   local title="$1" values="$2" current="$3"
   echo "$title"
@@ -500,7 +740,7 @@ ensure_dirs() {
 
 sync_sdk_packages_to_cache() {
   [[ "$SDK_PACKAGE_CACHE" == "1" ]] || return 0
-  mkdir -p "$SDK_PACKAGE_CACHE_DIR/platform-tools" "$SDK_PACKAGE_CACHE_DIR/platforms" "$SDK_PACKAGE_CACHE_DIR/build-tools"
+  mkdir -p "$SDK_PACKAGE_CACHE_DIR/platform-tools" "$SDK_PACKAGE_CACHE_DIR/platforms" "$SDK_PACKAGE_CACHE_DIR/build-tools" "$SDK_PACKAGE_CACHE_DIR/system-images"
   if [[ -d "$SDK_DIR/platform-tools" ]]; then
     rm -rf "$SDK_PACKAGE_CACHE_DIR/platform-tools"
     cp -a "$SDK_DIR/platform-tools" "$SDK_PACKAGE_CACHE_DIR/platform-tools"
@@ -512,6 +752,17 @@ sync_sdk_packages_to_cache() {
   if [[ -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]]; then
     rm -rf "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}"
     cp -a "$SDK_DIR/build-tools/${BUILD_TOOLS}" "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}"
+  fi
+  if [[ -d "$SDK_DIR/emulator" ]]; then
+    rm -rf "$SDK_PACKAGE_CACHE_DIR/emulator"
+    cp -a "$SDK_DIR/emulator" "$SDK_PACKAGE_CACHE_DIR/emulator"
+  fi
+  local emu_api
+  emu_api="$(get_emulator_api || true)"
+  if [[ -n "$emu_api" && -d "$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" ]]; then
+    mkdir -p "$SDK_PACKAGE_CACHE_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}"
+    rm -rf "$SDK_PACKAGE_CACHE_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
+    cp -a "$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" "$SDK_PACKAGE_CACHE_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
   fi
 }
 
@@ -531,6 +782,17 @@ restore_sdk_packages_from_cache() {
   if [[ -d "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}" && ! -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]]; then
     mkdir -p "$SDK_DIR/build-tools"
     cp -a "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}" "$SDK_DIR/build-tools/${BUILD_TOOLS}"
+    restored=1
+  fi
+  if [[ -d "$SDK_PACKAGE_CACHE_DIR/emulator" && ! -d "$SDK_DIR/emulator" ]]; then
+    cp -a "$SDK_PACKAGE_CACHE_DIR/emulator" "$SDK_DIR/emulator"
+    restored=1
+  fi
+  local emu_api
+  emu_api="$(get_emulator_api || true)"
+  if [[ -n "$emu_api" && -d "$SDK_PACKAGE_CACHE_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" && ! -d "$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" ]]; then
+    mkdir -p "$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}"
+    cp -a "$SDK_PACKAGE_CACHE_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" "$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
     restored=1
   fi
   [[ "$restored" -eq 1 ]] && ok "Restored SDK packages from cache"
@@ -683,6 +945,7 @@ install_jdk() {
   fi
   rm -rf "$JAVA_DIR"
   mkdir -p "$JAVA_DIR"
+  log "Unpacking JDK archive"
   tar -xzf "$archive" -C "$JAVA_DIR" --strip-components=1
   printf "%s\n" "$desired_tag" > "$JDK_META_FILE"
   ok "Installed JDK"
@@ -691,8 +954,13 @@ install_jdk() {
 install_cmdline_tools() {
   if [[ -x "$TOOLS_DIR/bin/sdkmanager" ]]; then ok "cmdline-tools already installed"; return; fi
   local zip_path="$DOWNLOAD_CACHE_DIR/$CMDLINE_TOOLS_ZIP"
+  local cmdline_url="$CMDLINE_TOOLS_URL"
+  if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$CMDLINE_TOOLS_CUSTOM_URL" ]]; then
+    cmdline_url="$CMDLINE_TOOLS_CUSTOM_URL"
+  fi
   log "Downloading Android cmdline-tools"
-  download_file "$CMDLINE_TOOLS_URL" "$zip_path" "all"
+  download_file "$cmdline_url" "$zip_path" "sdktools"
+  log "Unpacking cmdline-tools"
   mkdir -p "$SDK_DIR/cmdline-tools"
   rm -rf "$SDK_DIR/cmdline-tools/latest"
   unzip -q -o "$zip_path" -d "$SDK_DIR/cmdline-tools"
@@ -721,6 +989,7 @@ install_sdk_packages() {
   fi
 
   yes | sdkmanager --sdk_root="$SDK_DIR" --licenses >/dev/null || true
+  log "Installing SDK packages via sdkmanager"
   sdkmanager --sdk_root="$SDK_DIR" \
     "platform-tools" \
     "platforms;${ANDROID_PLATFORM}" \
@@ -740,15 +1009,73 @@ install_sdk_packages() {
   fi
 }
 
+install_emulator_components() {
+  export_portable_env
+  [[ "$EMULATOR_ENABLED" == "1" ]] || { ok "Emulator profile is OFF, skipping"; return 0; }
+  restore_sdk_packages_from_cache
+
+  local emu_api emu_pkg
+  emu_api="$(get_emulator_api || true)"
+  [[ -n "$emu_api" ]] || { warn "Could not resolve emulator API"; return 1; }
+  emu_pkg="$(emulator_system_image_package || true)"
+  [[ -n "$emu_pkg" ]] || { warn "Could not resolve emulator system image package"; return 1; }
+
+  local available_platforms
+  available_platforms="$(get_available_platforms || true)"
+  if [[ -n "$available_platforms" ]] && ! printf "%s\n" "$available_platforms" | grep -qx "$emu_api"; then
+    warn "Emulator API unavailable: $emu_api"
+    return 1
+  fi
+
+  yes | sdkmanager --sdk_root="$SDK_DIR" --licenses >/dev/null || true
+  sdkmanager --sdk_root="$SDK_DIR" "emulator" "$emu_pkg"
+
+  if [[ "$EMULATOR_AUTO_CREATE_AVD" == "1" ]]; then
+    if [[ ! -d "$ANDROID_USER_HOME/avd/${EMULATOR_AVD_NAME}.avd" ]]; then
+      yes "no" | avdmanager create avd -n "$EMULATOR_AVD_NAME" -k "$emu_pkg" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  sync_sdk_packages_to_cache
+  ok "Installed emulator components"
+}
+
+install_wizard_compatible_emulator() {
+  export_portable_env
+  local wizard_api="android-35"
+  local wizard_type="google_apis"
+  local wizard_abi="x86_64"
+  local wizard_pkg="system-images;${wizard_api};${wizard_type};${wizard_abi}"
+
+  yes | sdkmanager --sdk_root="$SDK_DIR" --licenses >/dev/null || true
+  log "Installing Studio wizard-compatible emulator profile"
+  sdkmanager --sdk_root="$SDK_DIR" "emulator" "$wizard_pkg" || true
+
+  if [[ "$EMULATOR_AUTO_CREATE_AVD" == "1" ]]; then
+    local wizard_avd="portable-avd-api35"
+    if [[ ! -d "$ANDROID_USER_HOME/avd/${wizard_avd}.avd" ]]; then
+      yes "no" | avdmanager create avd -n "$wizard_avd" -k "$wizard_pkg" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  sync_sdk_packages_to_cache
+}
+
 install_studio() {
   if [[ -x "$STUDIO_DIR/bin/studio.sh" ]]; then ok "Android Studio already installed"; return; fi
-  if ! resolve_studio_url; then
-    warn "Could not resolve a working Android Studio URL from official candidates"
-    return 1
+  if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$STUDIO_CUSTOM_URL" ]]; then
+    STUDIO_URL="$STUDIO_CUSTOM_URL"
+    STUDIO_ARCHIVE="$(basename "$STUDIO_CUSTOM_URL")"
+    STUDIO_VERSION="custom"
+  else
+    if ! resolve_studio_url; then
+      warn "Could not resolve a working Android Studio URL from official candidates"
+      return 1
+    fi
   fi
   local archive="$DOWNLOAD_CACHE_DIR/$STUDIO_ARCHIVE"
   log "Downloading Android Studio ${STUDIO_VERSION}"
-  if ! download_file "$STUDIO_URL" "$archive" "all"; then
+  if ! download_file "$STUDIO_URL" "$archive" "studio"; then
     warn "Failed to download Android Studio: $STUDIO_URL"
     return 1
   fi
@@ -766,6 +1093,7 @@ install_studio() {
   fi
   rm -rf "$STUDIO_DIR"
   mkdir -p "$STUDIO_DIR"
+  log "Unpacking Android Studio"
   tar -xzf "$archive" -C "$STUDIO_DIR" --strip-components=1
   ok "Installed Android Studio"
 }
@@ -812,6 +1140,13 @@ show_status() {
   [[ -d "$SDK_DIR/platforms/${ANDROID_PLATFORM}" ]] && check_line "platform ${ANDROID_PLATFORM}" OK "installed" || { check_line "platform ${ANDROID_PLATFORM}" WARN "not installed"; bad=1; }
   [[ -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]] && check_line "build-tools ${BUILD_TOOLS}" OK "installed" || { check_line "build-tools ${BUILD_TOOLS}" WARN "not installed"; bad=1; }
   [[ -x "$STUDIO_DIR/bin/studio.sh" ]] && check_line "Android Studio" OK "$(root_rel "$STUDIO_DIR")" || check_line "Android Studio" WARN "not installed"
+  if [[ "$EMULATOR_ENABLED" == "1" ]]; then
+    local emu_api emu_img
+    emu_api="$(get_emulator_api || true)"
+    emu_img="$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
+    [[ -x "$SDK_DIR/emulator/emulator" ]] && check_line "emulator" OK "installed" || { check_line "emulator" WARN "not installed"; bad=1; }
+    [[ -d "$emu_img" ]] && check_line "emu image ${emu_api}" OK "${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" || { check_line "emu image ${emu_api}" WARN "not installed"; bad=1; }
+  fi
 
   local iso_missing=0
   for d in .gradle .android .config .cache; do
@@ -944,6 +1279,18 @@ verify_install() {
 
   [[ -d "$SDK_DIR/platforms/${ANDROID_PLATFORM}" ]] && check_line "platform ${ANDROID_PLATFORM}" OK "installed" || { check_line "platform ${ANDROID_PLATFORM}" FAIL "missing"; failed=1; }
   [[ -d "$SDK_DIR/build-tools/${BUILD_TOOLS}" ]] && check_line "build-tools ${BUILD_TOOLS}" OK "installed" || { check_line "build-tools ${BUILD_TOOLS}" FAIL "missing"; failed=1; }
+
+  if [[ "$EMULATOR_ENABLED" == "1" ]]; then
+    local emu_api emu_img_path
+    emu_api="$(get_emulator_api || true)"
+    [[ -x "$SDK_DIR/emulator/emulator" ]] && check_line "emulator" OK "installed" || { check_line "emulator" FAIL "missing"; failed=1; }
+    emu_img_path="$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
+    [[ -d "$emu_img_path" ]] && check_line "system-image ${emu_api}" OK "${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}" || { check_line "system-image ${emu_api}" FAIL "missing ${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"; failed=1; }
+    if [[ "$EMULATOR_AUTO_CREATE_AVD" == "1" ]]; then
+      [[ -d "$ANDROID_USER_HOME/avd/${EMULATOR_AVD_NAME}.avd" ]] && check_line "avd ${EMULATOR_AVD_NAME}" OK "present" || check_line "avd ${EMULATOR_AVD_NAME}" WARN "not created yet"
+    fi
+  fi
+
   [[ -f "$ANDROID_DIR/env.sh" ]] && check_line "env.sh" OK "present" || { check_line "env.sh" FAIL "missing"; failed=1; }
   [[ -x "$ANDROID_DIR/run-studio.sh" ]] && check_line "run-studio.sh" OK "present" || { check_line "run-studio.sh" FAIL "missing"; failed=1; }
 
@@ -1090,6 +1437,7 @@ reinstall_component_menu() {
   printf "  %b3) Android Studio%b\n" "$C_INFO" "$C_RESET"
   printf "  %b4) Env files (env.sh, env, run-studio.sh)%b\n" "$C_INFO" "$C_RESET"
   printf "  %b5) All components%b\n" "$C_INFO" "$C_RESET"
+  printf "  %b6) Emulator components%b\n" "$C_INFO" "$C_RESET"
   printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
   read -r -p "> " rchoice
 
@@ -1118,6 +1466,19 @@ reinstall_component_menu() {
       ;;
     5)
       reinstall_all
+      ;;
+    6)
+      if [[ "$EMULATOR_ENABLED" != "1" ]]; then
+        warn "Emulator profile is OFF in Settings"
+        warn "Enable emulator in Settings first, then retry"
+      else
+        local emu_api emu_img
+        emu_api="$(get_emulator_api || true)"
+        emu_img="$SDK_DIR/system-images/${emu_api}/${EMULATOR_IMAGE_TYPE}/${EMULATOR_ABI}"
+        rm -rf "$SDK_DIR/emulator"
+        rm -rf "$emu_img"
+        install_emulator_components
+      fi
       ;;
     0)
       SKIP_PAUSE=1
@@ -1186,6 +1547,26 @@ install_base() {
 install_all() {
   install_base
   install_studio
+  install_emulator_components || true
+  write_env_files
+}
+
+install_emulator_only() {
+  ensure_tools
+  ensure_dirs
+  check_space
+  install_cmdline_tools
+  install_emulator_components
+  write_env_files
+}
+
+install_ide_ready() {
+  install_base
+  install_studio
+  if [[ "$EMULATOR_ENABLED" == "1" ]]; then
+    install_emulator_components
+    install_wizard_compatible_emulator
+  fi
   write_env_files
 }
 
@@ -1248,6 +1629,8 @@ interactive_menu() {
         printf "  %b4) Reinstall component%b\n" "$C_INFO" "$C_RESET"
         printf "  %b5) Reinstall all%b (smart)\n" "$C_WARN" "$C_RESET"
         printf "  %b6) Fix only errors%b\n" "$C_INFO" "$C_RESET"
+        printf "  %b7) Emulator components%b\n" "$C_INFO" "$C_RESET"
+        printf "  %b8) Full IDE-ready%b (base+studio+emulator profile)\n" "$C_INFO" "$C_RESET"
         printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
         read -r -p "> " ichoice
         case "$ichoice" in
@@ -1257,6 +1640,8 @@ interactive_menu() {
           4) run_menu_action "Reinstall Component" reinstall_component_checked ;;
           5) run_menu_action "Reinstall All" reinstall_all ;;
           6) run_menu_action "Fix only errors" fix_only_errors ;;
+          7) run_menu_action "Install Emulator" install_emulator_only ;;
+          8) run_menu_action "Install IDE-ready" install_ide_ready ;;
           0) SKIP_PAUSE=1 ;;
           *) warn "Unknown install option: $ichoice" ;;
         esac
@@ -1319,6 +1704,8 @@ fi
 case "$MODE" in
   base) install_base ;;
   studio) ensure_tools; ensure_dirs; check_space; install_studio; write_env_files ;;
+  emulator) install_emulator_only ;;
+  ide-ready) install_ide_ready ;;
   all) install_all ;;
   reinstall) reinstall_all ;;
   status) ensure_dirs; write_env_files; show_status ;;
@@ -1327,6 +1714,7 @@ case "$MODE" in
   open-studio) ensure_dirs; open_studio ;;
   enter-env) ensure_dirs; enter_env_shell ;;
   clear-cache) ensure_dirs; clear_download_cache ;;
+  clear-sdk-cache) ensure_dirs; rm -rf "$SDK_PACKAGE_CACHE_DIR"/*; ok "SDK package cache cleared" ;;
   *) fail "Unsupported mode: $MODE" ;;
 esac
 

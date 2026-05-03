@@ -24,9 +24,12 @@ Install to custom path:
 
 ## Modes
 
-- `all` - JDK + Android SDK + Android Studio
+- `all` - JDK + Android SDK + Android Studio (+ emulator if enabled)
 - `base` - JDK + Android SDK (for Gradle CLI builds)
 - `studio` - only Android Studio
+- `emulator` - install emulator package + selected system image profile
+- `ide-ready` - base + studio + emulator profile (if enabled)
+  - also installs a wizard-compatible API 35 Google APIs x86_64 emulator profile
 - `reinstall` - smart reinstall of currently installed components
 - `status` - detailed health/status dashboard
 - `versions` - show installed tool/package versions
@@ -34,6 +37,7 @@ Install to custom path:
 - `open-studio` - run Android Studio with portable env
 - `enter-env` - open shell with portable env loaded
 - `clear-cache` - clear download cache (`cache/`)
+- `clear-sdk-cache` - clear SDK package cache (`cache/sdk-packages/`)
 
 ## Java selection
 
@@ -58,6 +62,7 @@ In `Install` menu you can also choose `Reinstall component` and reinstall only:
 - Java (JDK)
 - Android SDK (cmdline-tools + packages)
 - Android Studio
+- Emulator components
 - Env files (`env.sh`, `env`, `run-studio.sh`)
 
 `Install` also includes `Fix only errors`:
@@ -126,18 +131,34 @@ You can configure download cache behavior in interactive menu:
 
 Cache modes in `Settings`:
 
-- `all` - cache Java + SDK + Studio archives
-- `java` - cache only Java archives
-- `none` - disable archive cache
+- `Minimal` (default): Java archive ON, SDK tools archive ON, Studio installer OFF, SDK package OFF
+- `Balanced`: Java archive ON, SDK tools archive ON, Studio installer OFF, SDK package ON
+- `Aggressive`: all caches ON
+- `No cache`: all caches OFF
+- `Custom`: shown automatically when cache flags are changed manually
 
 SDK package cache in `Settings`:
 
 - `SDK package cache: ON` - cache installed SDK folders (`platform-tools`, selected `platforms`, selected `build-tools`) in `cache/sdk-packages/`
 - `SDK package cache: OFF` - do not store/restore SDK package folders from cache
 
+Emulator profile in `Settings` (latest defaults):
+
+- `Emulator: ON` by default
+- API: `latest` by default
+- Image type: `google_apis` by default (lightweight, no Play Store)
+- ABI: `x86_64` by default
+- Auto-create AVD: `ON` by default
+
 You can also toggle:
 
 - `Pick from installed only` - choose platform/build-tools only from locally installed versions
+
+Advanced Sources in `Settings`:
+
+- Toggle custom sources ON/OFF
+- Override cmdline-tools URL
+- Override Android Studio URL
 
 Current settings are shown in the main dashboard menu.
 
