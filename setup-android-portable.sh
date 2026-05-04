@@ -391,6 +391,101 @@ resolve_local_path() {
   fi
 }
 
+autonomous_banner() {
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    log "Running in autonomous mode (strict offline, no internet access)"
+  fi
+}
+
+require_local_artifact() {
+  local label="$1" path="$2"
+  [[ -e "$path" ]] || fail "Autonomous mode: missing local artifact: $label ($path)"
+}
+
+resolve_source_local_artifact() {
+  local source_value="$1" expected_name="$2"
+  local src
+  src="$(resolve_local_path "$source_value")"
+  [[ -e "$src" ]] || fail "Autonomous mode: local source not found: $src"
+  if [[ -d "$src" ]]; then
+    local in_dir="$src/$expected_name"
+    [[ -f "$in_dir" ]] || fail "Autonomous mode: local source directory missing expected file: $in_dir"
+    printf "%s\n" "$in_dir"
+    return 0
+  fi
+  printf "%s\n" "$src"
+}
+
+require_local_source_with_ext() {
+  local source_value="$1" ext="$2" label="$3"
+  local src
+  src="$(resolve_local_path "$source_value")"
+  [[ -e "$src" ]] || fail "Autonomous mode: local source not found: $src"
+  if [[ -d "$src" ]]; then
+    local candidate
+    for candidate in "$src"/*."$ext"; do
+      [[ -f "$candidate" ]] || continue
+      return 0
+    done
+    fail "Autonomous mode: local source directory for $label has no *.$ext archive: $src"
+  fi
+}
+
+offline_preflight_check() {
+  local mode="$1"
+  [[ "$OFFLINE_MODE" == "1" ]] || return 0
+
+  autonomous_banner
+
+  case "$mode" in
+    base|all|ide-ready)
+      if [[ "$JAVA_MODE" == "temurin" ]]; then
+        require_local_artifact "JDK archive" "$DOWNLOAD_CACHE_DIR/jdk-${JDK_MAJOR}.tar.gz"
+      elif [[ "$JAVA_MODE" == "custom" ]]; then
+        [[ -n "$JAVA_CUSTOM_URL" ]] || fail "Autonomous mode: --java-url is required for --java-mode custom"
+        [[ ! "$JAVA_CUSTOM_URL" =~ ^https?:// ]] || fail "Autonomous mode: custom JDK source must be local path"
+        require_local_source_with_ext "$JAVA_CUSTOM_URL" "gz" "custom JDK"
+      fi
+
+      if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$CMDLINE_TOOLS_CUSTOM_URL" ]]; then
+        [[ ! "$CMDLINE_TOOLS_CUSTOM_URL" =~ ^https?:// ]] || fail "Autonomous mode: cmdline-tools source must be local path"
+        require_local_source_with_ext "$CMDLINE_TOOLS_CUSTOM_URL" "zip" "cmdline-tools"
+      else
+        require_local_artifact "cmdline-tools archive" "$DOWNLOAD_CACHE_DIR/$CMDLINE_TOOLS_ZIP"
+      fi
+
+      require_local_artifact "platform-tools cache" "$SDK_PACKAGE_CACHE_DIR/platform-tools"
+      require_local_artifact "platform cache" "$SDK_PACKAGE_CACHE_DIR/platforms/${ANDROID_PLATFORM}"
+      require_local_artifact "build-tools cache" "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}"
+      ;;
+  esac
+
+  case "$mode" in
+    studio|all|ide-ready)
+      if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$STUDIO_CUSTOM_URL" ]]; then
+        [[ ! "$STUDIO_CUSTOM_URL" =~ ^https?:// ]] || fail "Autonomous mode: Studio source must be local path"
+        require_local_source_with_ext "$STUDIO_CUSTOM_URL" "gz" "Android Studio"
+      else
+        require_local_artifact "Android Studio archive" "$DOWNLOAD_CACHE_DIR/$STUDIO_ARCHIVE"
+      fi
+      ;;
+  esac
+
+  case "$mode" in
+    emulator|all|ide-ready)
+      [[ "$EMULATOR_ENABLED" == "1" ]] || break
+      local emu_api emu_type emu_abi
+      emu_api="$(get_emulator_api || true)"
+      emu_type="$(get_emulator_image_type)"
+      emu_abi="$(get_emulator_abi)"
+      require_local_artifact "emulator cache" "$SDK_PACKAGE_CACHE_DIR/emulator"
+      require_local_artifact "system-image cache" "$SDK_PACKAGE_CACHE_DIR/system-images/${emu_api}/${emu_type}/${emu_abi}"
+      ;;
+  esac
+
+  ok "Autonomous mode preflight passed"
+}
+
 release_lock() {
   if [[ -f "$LOCK_FILE" ]]; then
     local lock_pid
@@ -446,7 +541,9 @@ ensure_tools() {
   need_cmd tar || missing+=(tar)
   need_cmd unzip || missing+=(unzip)
   need_cmd df || missing+=(df)
-  if ! need_cmd curl && ! need_cmd wget; then missing+=("curl|wget"); fi
+  if [[ "$OFFLINE_MODE" != "1" ]]; then
+    if ! need_cmd curl && ! need_cmd wget; then missing+=("curl|wget"); fi
+  fi
   (( ${#missing[@]} == 0 )) || fail "Missing required tools: ${missing[*]}"
 }
 
@@ -567,7 +664,7 @@ show_settings_summary() {
   local sdk_cache_mode="OFF"
   [[ "$SDK_PACKAGE_CACHE" == "1" ]] && sdk_cache_mode="ON"
   local offline_state="OFF"
-  [[ "$OFFLINE_MODE" == "1" ]] && offline_state="ON"
+  [[ "$OFFLINE_MODE" == "1" ]] && offline_state="ON (Autonomous)"
   local emu_state="OFF"
   [[ "$EMULATOR_ENABLED" == "1" ]] && emu_state="ON"
   local emu_api emu_type emu_abi emu_label
@@ -1035,7 +1132,9 @@ ensure_dirs() {
 }
 
 sync_sdk_packages_to_cache() {
-  [[ "$SDK_PACKAGE_CACHE" == "1" ]] || return 0
+  if [[ "$OFFLINE_MODE" != "1" && "$SDK_PACKAGE_CACHE" != "1" ]]; then
+    return 0
+  fi
   mkdir -p "$SDK_PACKAGE_CACHE_DIR/platform-tools" "$SDK_PACKAGE_CACHE_DIR/platforms" "$SDK_PACKAGE_CACHE_DIR/build-tools" "$SDK_PACKAGE_CACHE_DIR/system-images"
   if [[ -d "$SDK_DIR/platform-tools" ]]; then
     rm -rf "$SDK_PACKAGE_CACHE_DIR/platform-tools"
@@ -1066,7 +1165,9 @@ sync_sdk_packages_to_cache() {
 }
 
 restore_sdk_packages_from_cache() {
-  [[ "$SDK_PACKAGE_CACHE" == "1" ]] || return 0
+  if [[ "$OFFLINE_MODE" != "1" && "$SDK_PACKAGE_CACHE" != "1" ]]; then
+    return 0
+  fi
   local restored=0
   if [[ -d "$SDK_PACKAGE_CACHE_DIR/platform-tools" && ! -d "$SDK_DIR/platform-tools" ]]; then
     mkdir -p "$SDK_DIR"
@@ -1436,6 +1537,9 @@ check_line() {
 show_status() {
   echo
   printf "Root: %s\n" "$TARGET_ROOT"
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    printf "Mode: %s\n" "AUTONOMOUS (offline)"
+  fi
   printf "Android dir: %s\n" "$(root_rel "$ANDROID_DIR")"
   printf "Download cache: %s (%s)\n" "$(root_rel "$DOWNLOAD_CACHE_DIR")" "$CACHE_SIZE_DISPLAY"
   printf "Runtime cache: %s (%s)\n\n" "$(root_rel "$CACHE_DIR")" "$RUNTIME_CACHE_SIZE_DISPLAY"
@@ -1907,7 +2011,7 @@ EOF
 }
 
 install_base() {
-  run_install_with_prereqs install_base_components
+  run_install_with_prereqs base install_base_components
 }
 
 install_base_components() {
@@ -1919,7 +2023,7 @@ install_base_components() {
 }
 
 install_emulator_only() {
-  run_install_with_prereqs install_emulator_components_only
+  run_install_with_prereqs emulator install_emulator_components_only
 }
 
 install_emulator_components_only() {
@@ -1929,7 +2033,11 @@ install_emulator_components_only() {
 }
 
 install_ide_ready() {
-  install_base
+  run_install_with_prereqs all install_ide_ready_components
+}
+
+install_ide_ready_components() {
+  install_base_components
   install_studio
   if [[ "$EMULATOR_ENABLED" == "1" ]]; then
     install_emulator_components
@@ -1938,15 +2046,17 @@ install_ide_ready() {
 }
 
 run_install_with_prereqs() {
-  local action="$1"
+  local mode="$1"
+  local action="$2"
   ensure_tools
   ensure_dirs
   check_space
+  offline_preflight_check "$mode"
   "$action"
 }
 
 install_studio_only() {
-  run_install_with_prereqs install_studio_components_only
+  run_install_with_prereqs studio install_studio_components_only
 }
 
 install_studio_components_only() {

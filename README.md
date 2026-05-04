@@ -155,11 +155,13 @@ Emulator profile in `Settings`:
 You can also toggle:
 
 - `Offline Mode` - strict autonomous mode (0 network requests). Uses only local cache/installed artifacts/local source paths.
+- In strict autonomous mode, cache flags are ignored for required components: local artifacts must exist and are used directly.
 
 In `Offline Mode`:
 
 - No download/resolve/check via internet is performed.
 - If required artifacts are missing locally, install fails fast with a clear message.
+- Preflight runs before install and validates all required local artifacts for the selected mode.
 - You can provide local file/dir sources in `Advanced Sources` (absolute or relative paths).
 
 Advanced Sources in `Settings`:
