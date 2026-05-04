@@ -12,7 +12,7 @@ JAVA_CUSTOM_URL=""
 JAVA_ARCHIVE_CACHE="1"
 SDK_TOOLS_ARCHIVE_CACHE="1"
 STUDIO_INSTALLER_CACHE="0"
-PICK_FROM_INSTALLED_ONLY="0"
+OFFLINE_MODE="0"
 SDK_PACKAGE_CACHE="0"
 ADVANCED_SOURCES_ENABLED="0"
 CMDLINE_TOOLS_CUSTOM_URL=""
@@ -105,7 +105,9 @@ perf_render_diagnostics() {
   dir_size_human "$CACHE_DIR" >/dev/null
   t3="$(date +%s%3N)"
 
-  sdkmanager --list >/dev/null 2>&1 || true
+  if [[ "$OFFLINE_MODE" != "1" ]]; then
+    sdkmanager --list >/dev/null 2>&1 || true
+  fi
   t4="$(date +%s%3N)"
 
   LAST_CACHE_SIZE_REFRESH_TS=0
@@ -142,7 +144,9 @@ perf_render_diagnostics_raw() {
   dir_size_human "$CACHE_DIR" >/dev/null
   t3="$(date +%s%3N)"
 
-  sdkmanager --list >/dev/null 2>&1 || true
+  if [[ "$OFFLINE_MODE" != "1" ]]; then
+    sdkmanager --list >/dev/null 2>&1 || true
+  fi
   t4="$(date +%s%3N)"
 
   LAST_CACHE_SIZE_REFRESH_TS=0
@@ -272,7 +276,7 @@ JAVA_CUSTOM_URL="$JAVA_CUSTOM_URL"
 JAVA_ARCHIVE_CACHE="$JAVA_ARCHIVE_CACHE"
 SDK_TOOLS_ARCHIVE_CACHE="$SDK_TOOLS_ARCHIVE_CACHE"
 STUDIO_INSTALLER_CACHE="$STUDIO_INSTALLER_CACHE"
-PICK_FROM_INSTALLED_ONLY="$PICK_FROM_INSTALLED_ONLY"
+OFFLINE_MODE="$OFFLINE_MODE"
 SDK_PACKAGE_CACHE="$SDK_PACKAGE_CACHE"
 ADVANCED_SOURCES_ENABLED="$ADVANCED_SOURCES_ENABLED"
 CMDLINE_TOOLS_CUSTOM_URL="$CMDLINE_TOOLS_CUSTOM_URL"
@@ -303,6 +307,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 normalize_settings() {
+  if [[ -z "${OFFLINE_MODE:-}" && -n "${PICK_FROM_INSTALLED_ONLY:-}" ]]; then
+    OFFLINE_MODE="$PICK_FROM_INSTALLED_ONLY"
+  fi
   case "${JAVA_ARCHIVE_CACHE:-1}" in
     0|1) ;;
     *) JAVA_ARCHIVE_CACHE="1" ;;
@@ -315,9 +322,9 @@ normalize_settings() {
     0|1) ;;
     *) STUDIO_INSTALLER_CACHE="0" ;;
   esac
-  case "${PICK_FROM_INSTALLED_ONLY:-0}" in
+  case "${OFFLINE_MODE:-0}" in
     0|1) ;;
-    *) PICK_FROM_INSTALLED_ONLY="0" ;;
+    *) OFFLINE_MODE="0" ;;
   esac
   case "${SDK_PACKAGE_CACHE:-1}" in
     0|1) ;;
@@ -363,6 +370,25 @@ parse_bool_input() {
     "") echo "" ;;
     *) echo "invalid" ;;
   esac
+}
+
+is_remote_url() {
+  local v="$1"
+  [[ "$v" =~ ^https?:// ]]
+}
+
+is_local_source() {
+  local v="$1"
+  [[ "$v" =~ ^/ || "$v" =~ ^\./ || "$v" =~ ^\.\./ ]]
+}
+
+resolve_local_path() {
+  local input="$1"
+  if [[ "$input" == /* ]]; then
+    printf "%s\n" "$input"
+  else
+    printf "%s\n" "$TARGET_ROOT/$input"
+  fi
 }
 
 release_lock() {
@@ -472,7 +498,52 @@ apply_cache_preset() {
 
 download_file() {
   local url="$1" out="$2" kind="${3:-all}"
-  if cache_allowed_for "$kind" && [[ -s "$out" ]]; then ok "Cached: $(basename "$out")"; return 0; fi
+  if [[ -s "$out" ]]; then
+    ok "Cached: $(basename "$out")"
+    return 0
+  fi
+
+  if is_local_source "$url"; then
+    local src
+    src="$(resolve_local_path "$url")"
+    [[ -e "$src" ]] || fail "Local source not found: $src"
+    log "Resolved local path: $src"
+    mkdir -p "$(dirname "$out")"
+    if [[ -d "$src" ]]; then
+      local src_file
+      src_file="$src/$(basename "$out")"
+      if [[ ! -f "$src_file" ]]; then
+        local ext alt_file
+        ext="${out##*.}"
+        alt_file=""
+        if [[ "$out" == *.tar.gz ]]; then
+          for candidate in "$src"/*.tar.gz; do
+            [[ -f "$candidate" ]] || continue
+            alt_file="$candidate"
+            break
+          done
+        else
+          for candidate in "$src"/*."$ext"; do
+            [[ -f "$candidate" ]] || continue
+            alt_file="$candidate"
+            break
+          done
+        fi
+        [[ -n "$alt_file" ]] || fail "Local source directory does not contain expected archive: $src_file"
+        src_file="$alt_file"
+      fi
+      cp -f "$src_file" "$out"
+    else
+      cp -f "$src" "$out"
+    fi
+    ok "Using local source: $(basename "$out")"
+    return 0
+  fi
+
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    fail "Offline mode: required artifact missing in cache: $out"
+  fi
+
   if ! cache_allowed_for "$kind"; then
     rm -f "$out"
   fi
@@ -495,8 +566,8 @@ show_settings_summary() {
   fi
   local sdk_cache_mode="OFF"
   [[ "$SDK_PACKAGE_CACHE" == "1" ]] && sdk_cache_mode="ON"
-  local pick_state="OFF"
-  [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && pick_state="ON"
+  local offline_state="OFF"
+  [[ "$OFFLINE_MODE" == "1" ]] && offline_state="ON"
   local emu_state="OFF"
   [[ "$EMULATOR_ENABLED" == "1" ]] && emu_state="ON"
   local emu_api emu_type emu_abi emu_label
@@ -507,7 +578,7 @@ show_settings_summary() {
   local cache_preset
   cache_preset="$(get_cache_preset)"
   printf "%bCurrent settings:%b " "$C_INFO" "$C_RESET"
-  printf "%bJava:%b %s  %b|%b  %bCache:%b %s, %bPick:%b %s, %bSDK:%b %s, %bEmu:%b %s(%s: %s/%s/%s)" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$cache_preset" "$C_INFO" "$C_RESET" "$pick_state" "$C_INFO" "$C_RESET" "$sdk_cache_mode" "$C_INFO" "$C_RESET" "$emu_state" "$emu_label" "$emu_api" "$emu_type" "$emu_abi"
+  printf "%bJava:%b %s  %b|%b  %bCache:%b %s, %bOffline:%b %s, %bSDK:%b %s, %bEmu:%b %s(%s: %s/%s/%s)" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$cache_preset" "$C_INFO" "$C_RESET" "$offline_state" "$C_INFO" "$C_RESET" "$sdk_cache_mode" "$C_INFO" "$C_RESET" "$emu_state" "$emu_label" "$emu_api" "$emu_type" "$emu_abi"
   printf "\n"
 }
 
@@ -517,7 +588,7 @@ settings_menu() {
   printf "  %b1) Cache profile%b (current: %s)\n" "$C_WARN" "$C_RESET" "$(get_cache_preset)"
   printf "  %b2) Set Android platform%b (current: %s)\n" "$C_INFO" "$C_RESET" "$ANDROID_PLATFORM"
   printf "  %b3) Set build-tools version%b (current: %s)\n" "$C_INFO" "$C_RESET" "$BUILD_TOOLS"
-  printf "  %b4) Pick from installed only%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && echo ON || echo OFF)"
+  printf "  %b4) Offline Mode%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$OFFLINE_MODE" == "1" ]] && echo ON || echo OFF)"
   printf "  %b5) Emulator profile%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$EMULATOR_ENABLED" == "1" ]] && echo ON || echo OFF)"
   printf "  %b6) Advanced Sources%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$ADVANCED_SOURCES_ENABLED" == "1" ]] && echo ON || echo OFF)"
   printf "  %b7) Clear download cache%b\n" "$C_WARN" "$C_RESET"
@@ -532,6 +603,7 @@ settings_menu() {
       printf "  %b3) Aggressive%b\n" "$C_INFO" "$C_RESET"
       printf "  %b4) No cache%b\n" "$C_INFO" "$C_RESET"
       printf "  %b5) Manual toggles%b\n" "$C_INFO" "$C_RESET"
+      printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
       read -r -p "> " cmode
       case "$cmode" in
         1) apply_cache_preset minimal ;;
@@ -563,6 +635,7 @@ settings_menu() {
           [[ -n "$b4" && "$b4" != "invalid" ]] && SDK_PACKAGE_CACHE="$b4"
           normalize_settings
           ;;
+        0) SKIP_PAUSE=1; return 0 ;;
         *) warn "Unknown cache profile option" ;;
       esac
       save_config
@@ -575,7 +648,7 @@ settings_menu() {
       installed_platforms=""
       installed_platforms="$(get_installed_platforms)"
 
-      if [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]]; then
+      if [[ "$OFFLINE_MODE" == "1" ]]; then
         platforms="$installed_platforms"
         latest_platform="$(printf "%s\n" "$platforms" | tail -n 1)"
       elif [[ -x "$TOOLS_DIR/bin/sdkmanager" ]]; then
@@ -623,7 +696,7 @@ settings_menu() {
       installed_build_tools=""
       installed_build_tools="$(get_installed_build_tools)"
 
-      if [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]]; then
+      if [[ "$OFFLINE_MODE" == "1" ]]; then
         build_tools_list="$installed_build_tools"
         latest_build_tools="$(printf "%s\n" "$build_tools_list" | tail -n 1)"
       elif [[ -x "$TOOLS_DIR/bin/sdkmanager" ]]; then
@@ -665,13 +738,13 @@ settings_menu() {
       fi
       ;;
     4)
-      if [[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]]; then
-        PICK_FROM_INSTALLED_ONLY="0"
+      if [[ "$OFFLINE_MODE" == "1" ]]; then
+        OFFLINE_MODE="0"
       else
-        PICK_FROM_INSTALLED_ONLY="1"
+        OFFLINE_MODE="1"
       fi
       save_config
-      ok "Pick from installed only: $([[ "$PICK_FROM_INSTALLED_ONLY" == "1" ]] && echo ON || echo OFF)"
+      ok "Offline mode: $([[ "$OFFLINE_MODE" == "1" ]] && echo ON || echo OFF)"
       ;;
     5)
       echo "Emulator profile:"
@@ -753,8 +826,8 @@ settings_menu() {
     6)
       echo "Advanced Sources:"
       echo "  1) Toggle custom sources (current: $([[ "$ADVANCED_SOURCES_ENABLED" == "1" ]] && echo ON || echo OFF))"
-      echo "  2) Cmdline-tools URL override"
-      echo "  3) Studio URL override"
+      echo "  2) Cmdline-tools source override (URL or local path)"
+      echo "  3) Studio source override (URL or local path)"
       echo "  4) Reset overrides"
       echo "  0) Back"
       read -r -p "> " asrc
@@ -764,12 +837,12 @@ settings_menu() {
           save_config
           ;;
         2)
-          read -r -p "Cmdline-tools URL (empty to clear): " u
+          read -r -p "Cmdline-tools source (URL/path, empty to clear): " u
           CMDLINE_TOOLS_CUSTOM_URL="$u"
           save_config
           ;;
         3)
-          read -r -p "Studio URL (empty to clear): " su
+          read -r -p "Studio source (URL/path, empty to clear): " su
           STUDIO_CUSTOM_URL="$su"
           save_config
           ;;
@@ -807,6 +880,9 @@ EOF
 }
 
 resolve_studio_url() {
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    return 1
+  fi
   local candidate
   for candidate in $(studio_candidates); do
     if need_cmd curl; then
@@ -839,10 +915,18 @@ check_space() {
 }
 
 get_available_platforms() {
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    get_installed_platforms
+    return 0
+  fi
   sdkmanager --list 2>/dev/null | sed -n 's/^  platforms;\(android-[0-9][0-9]*\)[[:space:]]\+|.*/\1/p' | sort -uV
 }
 
 get_available_build_tools() {
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    get_installed_build_tools
+    return 0
+  fi
   sdkmanager --list 2>/dev/null | sed -n 's/^  build-tools;\([0-9]\+\.[0-9]\+\.[0-9]\+\)[[:space:]]\+|.*/\1/p' | sort -uV
 }
 
@@ -872,6 +956,10 @@ get_cached_jdk_versions() {
 }
 
 resolve_latest_emulator_api() {
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    get_installed_platforms | tail -n 1
+    return 0
+  fi
   local platforms
   platforms="$(get_available_platforms)"
   if [[ -z "$platforms" ]]; then
@@ -1110,6 +1198,9 @@ install_jdk() {
   local url
   if [[ "$JAVA_MODE" == "custom" ]]; then
     [[ -n "$JAVA_CUSTOM_URL" ]] || fail "--java-url is required for --java-mode custom"
+    if [[ "$OFFLINE_MODE" == "1" ]] && is_remote_url "$JAVA_CUSTOM_URL"; then
+      fail "Offline mode: custom JDK source must be a local path, got remote URL"
+    fi
     url="$JAVA_CUSTOM_URL"
   else
     case "$JDK_MAJOR" in
@@ -1170,6 +1261,9 @@ install_cmdline_tools() {
   local zip_path="$DOWNLOAD_CACHE_DIR/$CMDLINE_TOOLS_ZIP"
   local cmdline_url="$CMDLINE_TOOLS_URL"
   if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$CMDLINE_TOOLS_CUSTOM_URL" ]]; then
+    if [[ "$OFFLINE_MODE" == "1" ]] && is_remote_url "$CMDLINE_TOOLS_CUSTOM_URL"; then
+      fail "Offline mode: cmdline-tools override must be a local path, got remote URL"
+    fi
     cmdline_url="$CMDLINE_TOOLS_CUSTOM_URL"
   fi
   log "Downloading Android cmdline-tools"
@@ -1214,6 +1308,10 @@ install_sdk_packages() {
     return 0
   fi
 
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    fail "Offline mode: required SDK packages are missing locally. Provide cached SDK package folders or run once online."
+  fi
+
   yes | sdkmanager --sdk_root="$SDK_DIR" --licenses >/dev/null || true
   log "Installing missing SDK packages via sdkmanager"
   local sdk_args=()
@@ -1256,6 +1354,10 @@ install_emulator_components() {
     return 1
   fi
 
+  if [[ "$OFFLINE_MODE" == "1" ]]; then
+    fail "Offline mode: emulator components missing locally. Provide cached emulator folders or run once online."
+  fi
+
   yes | sdkmanager --sdk_root="$SDK_DIR" --licenses >/dev/null || true
   sdkmanager --sdk_root="$SDK_DIR" "emulator" "$emu_pkg"
 
@@ -1273,13 +1375,23 @@ install_studio() {
   if [[ -x "$STUDIO_DIR/bin/studio.sh" ]]; then ok "Android Studio already installed"; return; fi
   log "Cache policy: Java=${JAVA_ARCHIVE_CACHE} SDKTools=${SDK_TOOLS_ARCHIVE_CACHE} Studio=${STUDIO_INSTALLER_CACHE} SDKPackages=${SDK_PACKAGE_CACHE}"
   if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$STUDIO_CUSTOM_URL" ]]; then
+    if [[ "$OFFLINE_MODE" == "1" ]] && is_remote_url "$STUDIO_CUSTOM_URL"; then
+      fail "Offline mode: Studio override must be a local path, got remote URL"
+    fi
     STUDIO_URL="$STUDIO_CUSTOM_URL"
     STUDIO_ARCHIVE="$(basename "$STUDIO_CUSTOM_URL")"
     STUDIO_VERSION="custom"
   else
+    if [[ "$OFFLINE_MODE" == "1" ]]; then
+      if [[ ! -s "$DOWNLOAD_CACHE_DIR/$STUDIO_ARCHIVE" ]]; then
+        fail "Offline mode: Android Studio archive not found in cache: $DOWNLOAD_CACHE_DIR/$STUDIO_ARCHIVE"
+      fi
+    fi
     if ! resolve_studio_url; then
-      warn "Could not resolve a working Android Studio URL from official candidates"
-      return 1
+      if [[ "$OFFLINE_MODE" != "1" ]]; then
+        warn "Could not resolve a working Android Studio URL from official candidates"
+        return 1
+      fi
     fi
   fi
   local archive="$DOWNLOAD_CACHE_DIR/$STUDIO_ARCHIVE"

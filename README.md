@@ -154,13 +154,19 @@ Emulator profile in `Settings`:
 
 You can also toggle:
 
-- `Pick from installed only` - choose platform/build-tools only from locally installed versions
+- `Offline Mode` - strict autonomous mode (0 network requests). Uses only local cache/installed artifacts/local source paths.
+
+In `Offline Mode`:
+
+- No download/resolve/check via internet is performed.
+- If required artifacts are missing locally, install fails fast with a clear message.
+- You can provide local file/dir sources in `Advanced Sources` (absolute or relative paths).
 
 Advanced Sources in `Settings`:
 
 - Toggle custom sources ON/OFF
-- Override cmdline-tools URL
-- Override Android Studio URL
+- Override cmdline-tools source (URL or local path)
+- Override Android Studio source (URL or local path)
 
 Current settings are shown in the main dashboard menu.
 
