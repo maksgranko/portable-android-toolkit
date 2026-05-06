@@ -218,7 +218,7 @@ Usage:
   ./setup-android-portable.sh [install_dir] [options]
 
 Options:
-  --mode <base|studio|emulator|all|ide-ready|reinstall|status|versions|verify|open-studio|enter-env|clear-cache|perf|perf-raw|perf-compare>
+  --mode <base|studio|emulator|all|ide-ready|reinstall|status|versions|verify|open-studio|enter-env|clear-cache|cache-audit|perf|perf-raw|perf-compare>
   --dir <path>
   --jdk <17|21>
   --java-mode <temurin|system|custom>
@@ -486,6 +486,86 @@ offline_preflight_check() {
   ok "Autonomous mode preflight passed"
 }
 
+cache_audit_mode() {
+  ensure_dirs
+  echo
+  echo "Autonomous cache audit"
+  hr
+
+  local emu_api emu_type emu_abi
+  emu_api="$(get_emulator_api || true)"
+  emu_type="$(get_emulator_image_type)"
+  emu_abi="$(get_emulator_abi)"
+
+  local missing=0
+  local check_path
+  check_path() {
+    local label="$1" path="$2"
+    if [[ -e "$path" ]]; then
+      check_line "$label" OK "$(root_rel "$path")"
+    else
+      check_line "$label" FAIL "missing: $(root_rel "$path")"
+      missing=$((missing + 1))
+    fi
+  }
+
+  echo "Core archives"
+  check_path "JDK 17 archive" "$DOWNLOAD_CACHE_DIR/jdk-17.tar.gz"
+  check_path "JDK 21 archive" "$DOWNLOAD_CACHE_DIR/jdk-21.tar.gz"
+  check_path "cmdline-tools zip" "$DOWNLOAD_CACHE_DIR/$CMDLINE_TOOLS_ZIP"
+  check_path "Studio archive" "$DOWNLOAD_CACHE_DIR/$STUDIO_ARCHIVE"
+
+  echo
+  echo "SDK package cache"
+  check_path "platform-tools" "$SDK_PACKAGE_CACHE_DIR/platform-tools"
+  check_path "platform $ANDROID_PLATFORM" "$SDK_PACKAGE_CACHE_DIR/platforms/${ANDROID_PLATFORM}"
+  check_path "build-tools $BUILD_TOOLS" "$SDK_PACKAGE_CACHE_DIR/build-tools/${BUILD_TOOLS}"
+  check_path "emulator" "$SDK_PACKAGE_CACHE_DIR/emulator"
+  if [[ -n "$emu_api" ]]; then
+    check_path "system-image $emu_api" "$SDK_PACKAGE_CACHE_DIR/system-images/${emu_api}/${emu_type}/${emu_abi}"
+  else
+    check_line "system-image" WARN "emulator API not resolved"
+  fi
+
+  echo
+  echo "Local source overrides"
+  if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$CMDLINE_TOOLS_CUSTOM_URL" ]]; then
+    if is_remote_url "$CMDLINE_TOOLS_CUSTOM_URL"; then
+      check_line "cmdline-tools source" WARN "remote URL configured"
+    else
+      check_path "cmdline-tools source" "$(resolve_local_path "$CMDLINE_TOOLS_CUSTOM_URL")"
+    fi
+  else
+    check_line "cmdline-tools source" OK "not set"
+  fi
+  if [[ "$ADVANCED_SOURCES_ENABLED" == "1" && -n "$STUDIO_CUSTOM_URL" ]]; then
+    if is_remote_url "$STUDIO_CUSTOM_URL"; then
+      check_line "Studio source" WARN "remote URL configured"
+    else
+      check_path "Studio source" "$(resolve_local_path "$STUDIO_CUSTOM_URL")"
+    fi
+  else
+    check_line "Studio source" OK "not set"
+  fi
+  if [[ "$JAVA_MODE" == "custom" ]]; then
+    if is_remote_url "$JAVA_CUSTOM_URL"; then
+      check_line "custom JDK source" WARN "remote URL configured"
+    else
+      check_path "custom JDK source" "$(resolve_local_path "$JAVA_CUSTOM_URL")"
+    fi
+  else
+    check_line "custom JDK source" OK "not required"
+  fi
+
+  echo
+  if [[ "$missing" -eq 0 ]]; then
+    printf "%bAUTONOMOUS READY%b Required local artifacts are present for current settings.\n" "$C_OK" "$C_RESET"
+  else
+    printf "%bNOT READY%b Missing local artifacts: %d\n" "$C_WARN" "$C_RESET" "$missing"
+    echo "Tip: run online once to warm cache, or provide local paths in Settings -> Advanced Sources."
+  fi
+}
+
 release_lock() {
   if [[ -f "$LOCK_FILE" ]]; then
     local lock_pid
@@ -674,9 +754,9 @@ show_settings_summary() {
   emu_label="$(get_emulator_profile_label)"
   local cache_preset
   cache_preset="$(get_cache_preset)"
-  printf "%bCurrent settings:%b " "$C_INFO" "$C_RESET"
-  printf "%bJava:%b %s  %b|%b  %bCache:%b %s, %bOffline:%b %s, %bSDK:%b %s, %bEmu:%b %s(%s: %s/%s/%s)" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$cache_preset" "$C_INFO" "$C_RESET" "$offline_state" "$C_INFO" "$C_RESET" "$sdk_cache_mode" "$C_INFO" "$C_RESET" "$emu_state" "$emu_label" "$emu_api" "$emu_type" "$emu_abi"
-  printf "\n"
+  printf "%bCurrent settings:%b\n" "$C_INFO" "$C_RESET"
+  printf "  %bJava:%b %s  %b|%b  %bCache:%b %s  %b|%b  %bOffline:%b %s\n" "$C_OK" "$C_RESET" "$java_summary" "$C_DIM" "$C_RESET" "$C_WARN" "$C_RESET" "$cache_preset" "$C_DIM" "$C_RESET" "$C_INFO" "$C_RESET" "$offline_state"
+  printf "  %bSDK cache:%b %s  %b|%b  %bEmu:%b %s (%s: %s/%s/%s)\n" "$C_INFO" "$C_RESET" "$sdk_cache_mode" "$C_DIM" "$C_RESET" "$C_INFO" "$C_RESET" "$emu_state" "$emu_label" "$emu_api" "$emu_type" "$emu_abi"
 }
 
 settings_menu() {
@@ -690,6 +770,7 @@ settings_menu() {
   printf "  %b6) Advanced Sources%b (current: %s)\n" "$C_INFO" "$C_RESET" "$([[ "$ADVANCED_SOURCES_ENABLED" == "1" ]] && echo ON || echo OFF)"
   printf "  %b7) Clear download cache%b\n" "$C_WARN" "$C_RESET"
   printf "  %b8) Clear runtime cache%b\n" "$C_WARN" "$C_RESET"
+  printf "  %b9) Cache audit (autonomous)%b\n" "$C_INFO" "$C_RESET"
   printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
   read -r -p "> " schoice
   case "$schoice" in
@@ -959,6 +1040,9 @@ settings_menu() {
       ;;
     8)
       clear_runtime_cache
+      ;;
+    9)
+      cache_audit_mode
       ;;
     0)
       SKIP_PAUSE=1
@@ -2118,6 +2202,7 @@ interactive_menu() {
         printf "  %b5) Reinstall all%b (smart)\n" "$C_WARN" "$C_RESET"
         printf "  %b6) Fix only errors%b\n" "$C_INFO" "$C_RESET"
         printf "  %b7) Emulator components%b\n" "$C_INFO" "$C_RESET"
+        printf "  %b8) Cache audit (autonomous)%b\n" "$C_INFO" "$C_RESET"
         printf "  %b0) Back%b\n" "$C_DIM" "$C_RESET"
         read -r -p "> " ichoice
         case "$ichoice" in
@@ -2128,6 +2213,7 @@ interactive_menu() {
           5) run_menu_action "Reinstall All" reinstall_all ;;
           6) run_menu_action "Fix only errors" fix_only_errors ;;
           7) run_menu_action "Install Emulator" install_emulator_only ;;
+          8) run_menu_action "Cache audit" cache_audit_mode ;;
           0) SKIP_PAUSE=1 ;;
           *) warn "Unknown install option: $ichoice" ;;
         esac
@@ -2203,6 +2289,7 @@ case "$MODE" in
   status) ensure_dirs; write_env_files; show_status ;;
   versions) ensure_dirs; write_env_files; show_versions ;;
   verify) ensure_dirs; write_env_files; verify_install ;;
+  cache-audit) cache_audit_mode ;;
   open-studio) ensure_dirs; open_studio ;;
   enter-env) ensure_dirs; enter_env_shell ;;
   clear-cache) ensure_dirs; clear_download_cache ;;

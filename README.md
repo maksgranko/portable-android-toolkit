@@ -33,6 +33,7 @@ Install to custom path:
 - `status` - detailed health/status dashboard
 - `versions` - show installed tool/package versions
 - `verify` - validate Java/SDK consistency and required components
+- `cache-audit` - check autonomous/offline cache readiness and list missing local artifacts
 - `perf` - print render performance diagnostics
 - `perf-raw` - print full/raw render diagnostics (forced heavy refresh)
 - `perf-compare` - compare optimized vs raw render collection timing
@@ -77,6 +78,7 @@ Examples:
 ./setup-android-portable.sh --mode status
 ./setup-android-portable.sh --mode versions
 ./setup-android-portable.sh --mode verify
+./setup-android-portable.sh --mode cache-audit
 ./setup-android-portable.sh --mode reinstall
 ./setup-android-portable.sh --mode clear-cache
 ./setup-android-portable.sh --mode open-studio
